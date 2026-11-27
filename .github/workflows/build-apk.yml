@@ -1,0 +1,59 @@
+name: Build YueDu Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build Debug APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk YueDu-v0.1.0-debug.apk
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: YueDu-v0.1.0-debug-apk
+          path: YueDu-v0.1.0-debug.apk
+
+      - name: Publish Preview Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.1.0-preview
+          name: 悦读 YueDu v0.1.0 预览版
+          body: |
+            第一版预览包（Android）：
+            - 纯净 TXT 阅读（自动识别 UTF-8 / GB18030 / UTF-16，自动切分章节）
+            - 同 Wi-Fi 电脑网页批量传书 & 传字体
+            - 自定义导入 `.ttf / .otf / .ttc` 字体
+            - iOS 27 Liquid Glass 液态玻璃风格界面
+          files: YueDu-v0.1.0-debug.apk
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
