@@ -1,8 +1,15 @@
+import java.security.KeyStore
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+val debugKeystoreFile = file("debug.keystore")
+val debugKeyAlias: String = KeyStore.getInstance("PKCS12").apply {
+    debugKeystoreFile.inputStream().use { load(it, "android".toCharArray()) }
+}.aliases().toList().first()
 
 android {
     namespace = "com.yuedu.reader"
@@ -22,10 +29,10 @@ android {
 
     signingConfigs {
         getByName("debug") {
-            storeFile = file("debug.keystore")
+            storeFile = debugKeystoreFile
             storeType = "PKCS12"
             storePassword = "android"
-            keyAlias = "androiddebugkey"
+            keyAlias = debugKeyAlias
             keyPassword = "android"
         }
     }
