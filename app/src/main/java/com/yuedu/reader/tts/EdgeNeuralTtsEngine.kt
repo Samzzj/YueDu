@@ -35,7 +35,7 @@ object EdgeNeuralTtsEngine {
     private const val WSS_URL = "wss://$BASE_URL/edge/v1?TrustedClientToken=$TRUSTED_CLIENT_TOKEN"
 
     val neuralVoices: List<TtsVoiceOption> = listOf(
-        // 云希作为安装包内置本地离线兜底默认音色，其同系列情感音色同步内置零延迟运行
+        // 仅云希内置于安装包，其余音色全部支持 1:1 独立下载到本地（未下载前走在线拟真朗读，断网自动回落云希）
         TtsVoiceOption(
             id = "edge:zh-CN-YunxiNeural",
             engineVoiceName = "zh-CN-YunxiNeural",
@@ -51,8 +51,10 @@ object EdgeNeuralTtsEngine {
             displayLabel = "晓晓",
             styleTag = "温暖自然 · 小说女声",
             isNeural = true,
-            offlineSid = 47,
-            isBuiltinOffline = true
+            offlinePackId = SherpaOfflineTtsEngine.PACK_VITS_THERESA,
+            offlineSid = 0,
+            offlineSizeLabel = "115MB",
+            isBuiltinOffline = false
         ),
         TtsVoiceOption(
             id = "edge:zh-CN-YunjianNeural",
@@ -60,26 +62,10 @@ object EdgeNeuralTtsEngine {
             displayLabel = "云健",
             styleTag = "热血沉稳 · 悬疑玄幻旁白",
             isNeural = true,
-            offlineSid = 49,
-            isBuiltinOffline = true
-        ),
-        TtsVoiceOption(
-            id = "edge:zh-CN-XiaoyiNeural",
-            engineVoiceName = "zh-CN-XiaoyiNeural",
-            displayLabel = "晓伊",
-            styleTag = "甜美灵动 · 青春女声",
-            isNeural = true,
-            offlineSid = 48,
-            isBuiltinOffline = true
-        ),
-        TtsVoiceOption(
-            id = "edge:zh-CN-YunxiaNeural",
-            engineVoiceName = "zh-CN-YunxiaNeural",
-            displayLabel = "云夏",
-            styleTag = "清亮少年 · 轻小说音色",
-            isNeural = true,
-            offlineSid = 51,
-            isBuiltinOffline = true
+            offlinePackId = SherpaOfflineTtsEngine.PACK_VITS_UNITY,
+            offlineSid = 0,
+            offlineSizeLabel = "114MB",
+            isBuiltinOffline = false
         ),
         TtsVoiceOption(
             id = "edge:zh-CN-YunyangNeural",
@@ -87,8 +73,21 @@ object EdgeNeuralTtsEngine {
             displayLabel = "云扬",
             styleTag = "沉稳播音 · 纪实历史男声",
             isNeural = true,
-            offlineSid = 52,
-            isBuiltinOffline = true
+            offlinePackId = SherpaOfflineTtsEngine.PACK_VITS_ZHIHUI,
+            offlineSid = 0,
+            offlineSizeLabel = "114MB",
+            isBuiltinOffline = false
+        ),
+        TtsVoiceOption(
+            id = "edge:zh-CN-XiaoyiNeural",
+            engineVoiceName = "zh-CN-XiaoyiNeural",
+            displayLabel = "晓伊",
+            styleTag = "甜美灵动 · 青春女声",
+            isNeural = true,
+            offlinePackId = SherpaOfflineTtsEngine.PACK_VITS_KEQING,
+            offlineSid = 0,
+            offlineSizeLabel = "115MB",
+            isBuiltinOffline = false
         ),
         TtsVoiceOption(
             id = "edge:zh-CN-liaoning-XiaobeiNeural",
@@ -96,8 +95,10 @@ object EdgeNeuralTtsEngine {
             displayLabel = "晓北",
             styleTag = "爽朗亲切 · 活力女声",
             isNeural = true,
-            offlineSid = 45,
-            isBuiltinOffline = true
+            offlinePackId = SherpaOfflineTtsEngine.PACK_VITS_EULA,
+            offlineSid = 0,
+            offlineSizeLabel = "115MB",
+            isBuiltinOffline = false
         ),
         TtsVoiceOption(
             id = "edge:zh-CN-shaanxi-XiaoniNeural",
@@ -105,10 +106,11 @@ object EdgeNeuralTtsEngine {
             displayLabel = "晓妮",
             styleTag = "温婉叙事 · 故事女声",
             isNeural = true,
-            offlineSid = 46,
-            isBuiltinOffline = true
+            offlinePackId = SherpaOfflineTtsEngine.PACK_VITS_ECHO,
+            offlineSid = 0,
+            offlineSizeLabel = "115MB",
+            isBuiltinOffline = false
         ),
-        // 独立可选离线扩展音色（一对一独立下载，不联动其他音色）
         TtsVoiceOption(
             id = "matcha:baker",
             engineVoiceName = "zh-CN-XiaohanNeural",

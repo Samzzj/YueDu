@@ -689,7 +689,7 @@ private fun PortraitBookItem(
     onLongClick: () -> Unit
 ) {
     val glass = LocalLiquidGlass.current
-    val (c1, c2) = BookCoverPalettes[book.coverPaletteIndex % BookCoverPalettes.size]
+    val (c1, _) = BookCoverPalettes[book.coverPaletteIndex % BookCoverPalettes.size]
 
     Column(
         modifier = Modifier
@@ -701,43 +701,25 @@ private fun PortraitBookItem(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(0.68f)
-                .shadow(
-                    elevation = 8.dp,
-                    shape = RoundedCornerShape(10.dp),
-                    ambientColor = Color.Black.copy(alpha = 0.22f),
-                    spotColor = Color.Black.copy(alpha = 0.22f)
-                )
                 .clip(RoundedCornerShape(10.dp))
-                .background(Brush.verticalGradient(listOf(c1, c2)))
-                .border(0.6.dp, Color.White.copy(alpha = 0.28f), RoundedCornerShape(10.dp))
+                .background(c1)
         ) {
-            Box(
-                modifier = Modifier
-                    .width(9.dp)
-                    .fillMaxHeight()
-                    .background(
-                        Brush.horizontalGradient(
-                            listOf(
-                                Color.Black.copy(alpha = 0.16f),
-                                Color.White.copy(alpha = 0.18f),
-                                Color.Transparent
-                            )
-                        )
-                    )
-            )
-
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(start = 12.dp, end = 9.dp, top = 10.dp, bottom = 10.dp),
+                    .padding(horizontal = 11.dp, vertical = 11.dp),
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
                     text = "TXT",
-                    color = Color.White.copy(alpha = 0.78f),
+                    color = Color.White.copy(alpha = 0.9f),
                     fontSize = 9.sp,
                     fontWeight = FontWeight.SemiBold,
-                    letterSpacing = 0.6.sp
+                    letterSpacing = 0.6.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(Color.White.copy(alpha = 0.2f))
+                        .padding(horizontal = 5.dp, vertical = 2.dp)
                 )
 
                 Text(
@@ -752,7 +734,7 @@ private fun PortraitBookItem(
 
                 Text(
                     text = if (book.lastReadAt == 0L) "未读" else String.format(Locale.US, "%.1f%%", book.progress * 100f),
-                    color = Color.White.copy(alpha = 0.86f),
+                    color = Color.White.copy(alpha = 0.88f),
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Medium
                 )
@@ -787,7 +769,7 @@ private fun ListBookCard(
     onDeleteClick: () -> Unit
 ) {
     val glass = LocalLiquidGlass.current
-    val (c1, c2) = BookCoverPalettes[book.coverPaletteIndex % BookCoverPalettes.size]
+    val (c1, _) = BookCoverPalettes[book.coverPaletteIndex % BookCoverPalettes.size]
 
     LiquidGlassSurface(
         modifier = Modifier
@@ -809,13 +791,13 @@ private fun ListBookCard(
                     .width(54.dp)
                     .height(78.dp)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(Brush.verticalGradient(listOf(c1, c2)))
+                    .background(c1)
                     .padding(6.dp),
                 contentAlignment = Alignment.BottomStart
             ) {
                 Text(
                     text = "TXT",
-                    color = Color.White.copy(alpha = 0.9f),
+                    color = Color.White.copy(alpha = 0.92f),
                     fontSize = 9.sp,
                     fontWeight = FontWeight.Bold
                 )

@@ -396,7 +396,6 @@ fun AiReadingSettingsScreen(
                 ) {
                     availableVoices.forEachIndexed { idx, voice ->
                         val selected = ttsSettings.voiceId == voice.id
-                        val isYunxiFallback = voice.id == "edge:zh-CN-YunxiNeural"
                         val packId = voice.offlinePackId
                         val progress = packId?.let { packDownloadProgress[it] }
                         val isDownloaded = packId != null && packId in downloadedPacks
@@ -430,29 +429,14 @@ fun AiReadingSettingsScreen(
                                 Spacer(modifier = Modifier.width(12.dp))
 
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(
-                                            text = voice.displayLabel,
-                                            color = glass.textPrimary,
-                                            fontSize = 15.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        if (isYunxiFallback) {
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text(
-                                                text = "内置兜底",
-                                                color = glass.accent,
-                                                fontSize = 10.sp,
-                                                fontWeight = FontWeight.SemiBold,
-                                                modifier = Modifier
-                                                    .clip(RoundedCornerShape(6.dp))
-                                                    .background(glass.accentSoft)
-                                                    .padding(horizontal = 6.dp, vertical = 2.dp)
-                                            )
-                                        }
-                                    }
+                                    Text(
+                                        text = voice.displayLabel,
+                                        color = glass.textPrimary,
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                     Text(
                                         text = voice.styleTag,
                                         color = glass.textSecondary,

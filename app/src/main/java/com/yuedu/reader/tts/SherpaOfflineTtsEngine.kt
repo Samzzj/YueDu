@@ -6,9 +6,9 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
-import com.k2fsa.sherpa.onnx.OfflineTtsKokoroModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsMatchaModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
+import com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig
 import com.yuedu.reader.data.CommercialFontsCatalog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -23,12 +23,12 @@ import java.io.FileOutputStream
 
 /**
  * Offline neural TTS engine powered by `k2-fsa/sherpa-onnx`.
- * Supports both built-in APK asset models (Yunxi & Kokoro family as zero-delay local fallback)
- * and individually downloadable optional packs.
+ * Uses clean FP32 VITS / Matcha models (avoiding ARM64 Kokoro-int8 iSTFT noise)
+ * and outputs sanitized 16-bit PCM to AudioTrack for click/static-free playback.
  */
 class SherpaOfflineTtsEngine(private val context: Context) {
 
-    enum class PackKind { MATCHA }
+    enum class PackKind { VITS, MATCHA }
 
     data class OfflineModelPack(
         val id: String,
@@ -39,22 +39,72 @@ class SherpaOfflineTtsEngine(private val context: Context) {
     )
 
     companion object {
-        const val BUILTIN_KOKORO_KEY = "__builtin_kokoro__"
-        const val BUILTIN_KOKORO_ASSET_DIR = "tts_models/kokoro-int8-multi-lang-v1_0"
-        const val YUNXI_BUILTIN_SID = 50
+        const val BUILTIN_YUNXI_KEY = "__builtin_yunxi_vits__"
+        const val BUILTIN_YUNXI_ASSET_DIR = "tts_models/vits-zh-hf-fanchen-wnj"
+        const val YUNXI_BUILTIN_SID = 0
 
         const val PACK_MATCHA_BAKER = "matcha_baker"
+        const val PACK_VITS_THERESA = "vits_theresa"
+        const val PACK_VITS_UNITY = "vits_unity"
+        const val PACK_VITS_ZHIHUI = "vits_zhihui"
+        const val PACK_VITS_KEQING = "vits_keqing"
+        const val PACK_VITS_EULA = "vits_eula"
+        const val PACK_VITS_ECHO = "vits_echo"
+
+        private fun modelUrls(archiveName: String): List<String> = listOf(
+            "https://gh-proxy.com/https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/$archiveName",
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/$archiveName"
+        )
 
         val modelPacks: Map<String, OfflineModelPack> = mapOf(
             PACK_MATCHA_BAKER to OfflineModelPack(
                 id = PACK_MATCHA_BAKER,
-                title = "小贝自然旁白离线包",
+                title = "小贝离线包",
                 sizeLabel = "72MB",
                 kind = PackKind.MATCHA,
-                downloadUrls = listOf(
-                    "https://gh-proxy.com/https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/matcha-icefall-zh-baker.tar.bz2",
-                    "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/matcha-icefall-zh-baker.tar.bz2"
-                )
+                downloadUrls = modelUrls("matcha-icefall-zh-baker.tar.bz2")
+            ),
+            PACK_VITS_THERESA to OfflineModelPack(
+                id = PACK_VITS_THERESA,
+                title = "晓晓离线包",
+                sizeLabel = "115MB",
+                kind = PackKind.VITS,
+                downloadUrls = modelUrls("vits-zh-hf-theresa.tar.bz2")
+            ),
+            PACK_VITS_UNITY to OfflineModelPack(
+                id = PACK_VITS_UNITY,
+                title = "云健离线包",
+                sizeLabel = "114MB",
+                kind = PackKind.VITS,
+                downloadUrls = modelUrls("vits-zh-hf-fanchen-unity.tar.bz2")
+            ),
+            PACK_VITS_ZHIHUI to OfflineModelPack(
+                id = PACK_VITS_ZHIHUI,
+                title = "云扬离线包",
+                sizeLabel = "114MB",
+                kind = PackKind.VITS,
+                downloadUrls = modelUrls("vits-zh-hf-fanchen-ZhiHuiLaoZhe.tar.bz2")
+            ),
+            PACK_VITS_KEQING to OfflineModelPack(
+                id = PACK_VITS_KEQING,
+                title = "晓伊离线包",
+                sizeLabel = "115MB",
+                kind = PackKind.VITS,
+                downloadUrls = modelUrls("vits-zh-hf-keqing.tar.bz2")
+            ),
+            PACK_VITS_EULA to OfflineModelPack(
+                id = PACK_VITS_EULA,
+                title = "晓北离线包",
+                sizeLabel = "115MB",
+                kind = PackKind.VITS,
+                downloadUrls = modelUrls("vits-zh-hf-eula.tar.bz2")
+            ),
+            PACK_VITS_ECHO to OfflineModelPack(
+                id = PACK_VITS_ECHO,
+                title = "晓妮离线包",
+                sizeLabel = "115MB",
+                kind = PackKind.VITS,
+                downloadUrls = modelUrls("vits-zh-hf-echo.tar.bz2")
             )
         )
     }
@@ -66,7 +116,7 @@ class SherpaOfflineTtsEngine(private val context: Context) {
 
     private val builtinAvailableCached: Boolean by lazy {
         runCatching {
-            context.assets.list(BUILTIN_KOKORO_ASSET_DIR)?.contains("model.int8.onnx") == true
+            context.assets.list(BUILTIN_YUNXI_ASSET_DIR)?.contains("vits-zh-hf-fanchen-wnj.onnx") == true
         }.getOrDefault(false)
     }
 
@@ -157,30 +207,29 @@ class SherpaOfflineTtsEngine(private val context: Context) {
     }
 
     @Synchronized
-    private fun getOrCreateBuiltinKokoro(): OfflineTts {
-        if (loadedKey == BUILTIN_KOKORO_KEY && loadedTts != null) {
+    private fun getOrCreateBuiltinYunxi(): OfflineTts {
+        if (loadedKey == BUILTIN_YUNXI_KEY && loadedTts != null) {
             return loadedTts!!
         }
         runCatching { loadedTts?.free() }
         loadedTts = null
         loadedKey = null
 
-        val dir = BUILTIN_KOKORO_ASSET_DIR
+        val dir = BUILTIN_YUNXI_ASSET_DIR
         val config = OfflineTtsConfig(
             model = OfflineTtsModelConfig(
-                kokoro = OfflineTtsKokoroModelConfig(
-                    model = "$dir/model.int8.onnx",
-                    voices = "$dir/voices.bin",
-                    tokens = "$dir/tokens.txt",
-                    lexicon = "$dir/lexicon-us-en.txt,$dir/lexicon-zh.txt"
+                vits = OfflineTtsVitsModelConfig(
+                    model = "$dir/vits-zh-hf-fanchen-wnj.onnx",
+                    lexicon = "$dir/lexicon.txt",
+                    tokens = "$dir/tokens.txt"
                 ),
-                numThreads = 4,
+                numThreads = 2,
                 provider = "cpu"
             ),
-            ruleFsts = "$dir/phone-zh.fst,$dir/date-zh.fst,$dir/number-zh.fst"
+            ruleFsts = "$dir/phone.fst,$dir/date.fst,$dir/number.fst"
         )
         val created = OfflineTts(assetManager = context.assets, config = config)
-        loadedKey = BUILTIN_KOKORO_KEY
+        loadedKey = BUILTIN_YUNXI_KEY
         loadedTts = created
         return created
     }
@@ -201,8 +250,14 @@ class SherpaOfflineTtsEngine(private val context: Context) {
             files.firstOrNull(predicate)?.absolutePath.orEmpty()
 
         val tokensPath = findFile { it.name == "tokens.txt" }
-        val fstPaths = files.filter { it.name.endsWith(".fst") }.sortedBy { it.name }.joinToString(",") { it.absolutePath }
-        val farPaths = files.filter { it.name.endsWith(".far") }.sortedBy { it.name }.joinToString(",") { it.absolutePath }
+        val fstPaths = files
+            .filter { it.name in setOf("phone.fst", "date.fst", "number.fst") }
+            .sortedBy { it.name }
+            .joinToString(",") { it.absolutePath }
+        val farPaths = files
+            .filter { it.name.endsWith(".far") }
+            .sortedBy { it.name }
+            .joinToString(",") { it.absolutePath }
 
         val config = when (pack.kind) {
             PackKind.MATCHA -> {
@@ -214,6 +269,24 @@ class SherpaOfflineTtsEngine(private val context: Context) {
                         matcha = OfflineTtsMatchaModelConfig(
                             acousticModel = acoustic,
                             vocoder = vocoder,
+                            lexicon = lex,
+                            tokens = tokensPath
+                        ),
+                        numThreads = 2,
+                        provider = "cpu"
+                    ),
+                    ruleFsts = fstPaths,
+                    ruleFars = farPaths
+                )
+            }
+
+            PackKind.VITS -> {
+                val modelPath = findFile { it.name.endsWith(".onnx") }
+                val lex = findFile { it.name == "lexicon.txt" }
+                OfflineTtsConfig(
+                    model = OfflineTtsModelConfig(
+                        vits = OfflineTtsVitsModelConfig(
+                            model = modelPath,
                             lexicon = lex,
                             tokens = tokensPath
                         ),
@@ -237,11 +310,11 @@ class SherpaOfflineTtsEngine(private val context: Context) {
         text: String,
         speed: Float
     ) = withContext(Dispatchers.IO) {
-        val tts = getOrCreateBuiltinKokoro()
+        val tts = getOrCreateBuiltinYunxi()
         currentCoroutineContext().ensureActive()
         val audio = tts.generate(text = text, sid = sid, speed = speed.coerceIn(0.5f, 2.5f))
         currentCoroutineContext().ensureActive()
-        playFloatPcmBlocking(audio.samples, audio.sampleRate)
+        playPcm16Blocking(audio.samples, audio.sampleRate)
     }
 
     suspend fun speakBlocking(
@@ -254,15 +327,31 @@ class SherpaOfflineTtsEngine(private val context: Context) {
         currentCoroutineContext().ensureActive()
         val audio = tts.generate(text = text, sid = sid, speed = speed.coerceIn(0.5f, 2.5f))
         currentCoroutineContext().ensureActive()
-        playFloatPcmBlocking(audio.samples, audio.sampleRate)
+        playPcm16Blocking(audio.samples, audio.sampleRate)
     }
 
-    private suspend fun playFloatPcmBlocking(samples: FloatArray, sampleRate: Int) {
+    private suspend fun playPcm16Blocking(samples: FloatArray, sampleRate: Int) {
         if (samples.isEmpty() || sampleRate <= 0) return
-        val minBuf = AudioTrack.getMinBufferSize(
+
+        // Convert to sanitized 16-bit PCM with 5ms edge fade to eliminate float HAL buzz and boundary clicks
+        val pcm = ShortArray(samples.size)
+        val fadeSamples = minOf(samples.size / 4, (sampleRate * 0.005f).toInt().coerceAtLeast(1))
+        for (i in samples.indices) {
+            var s = samples[i]
+            if (!s.isFinite()) s = 0f
+            s = s.coerceIn(-0.98f, 0.98f)
+            if (i < fadeSamples) {
+                s *= (i.toFloat() / fadeSamples.toFloat())
+            } else if (i >= samples.size - fadeSamples) {
+                s *= ((samples.size - 1 - i).toFloat() / fadeSamples.toFloat())
+            }
+            pcm[i] = (s * 32767f).toInt().coerceIn(-32768, 32767).toShort()
+        }
+
+        val minBufBytes = AudioTrack.getMinBufferSize(
             sampleRate,
             AudioFormat.CHANNEL_OUT_MONO,
-            AudioFormat.ENCODING_PCM_FLOAT
+            AudioFormat.ENCODING_PCM_16BIT
         ).coerceAtLeast(4096)
 
         val track = AudioTrack.Builder()
@@ -274,12 +363,12 @@ class SherpaOfflineTtsEngine(private val context: Context) {
             )
             .setAudioFormat(
                 AudioFormat.Builder()
-                    .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                     .setSampleRate(sampleRate)
                     .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                     .build()
             )
-            .setBufferSizeInBytes(minBuf * 2)
+            .setBufferSizeInBytes(minBufBytes * 2)
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
 
@@ -292,10 +381,10 @@ class SherpaOfflineTtsEngine(private val context: Context) {
             track.play()
             var offset = 0
             val chunkSize = 2048
-            while (offset < samples.size) {
+            while (offset < pcm.size) {
                 currentCoroutineContext().ensureActive()
-                val count = minOf(chunkSize, samples.size - offset)
-                val written = track.write(samples, offset, count, AudioTrack.WRITE_BLOCKING)
+                val count = minOf(chunkSize, pcm.size - offset)
+                val written = track.write(pcm, offset, count, AudioTrack.WRITE_BLOCKING)
                 if (written <= 0) break
                 offset += written
             }
