@@ -38,17 +38,23 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AutoStories
+import androidx.compose.material.icons.rounded.BrightnessAuto
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.FontDownload
 import androidx.compose.material.icons.rounded.GridView
+import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.ViewAgenda
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -78,6 +84,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -132,6 +139,7 @@ fun BookshelfScreen(
     var showImportMenu by remember { mutableStateOf(false) }
     var showWifiSheet by remember { mutableStateOf(false) }
     var showFontSheet by remember { mutableStateOf(false) }
+    var showAppearanceMenu by remember { mutableStateOf(false) }
 
     val filtered = remember(books, query) {
         val q = query.trim()
@@ -168,7 +176,57 @@ fun BookshelfScreen(
                 )
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box {
+                    LiquidGlassButton(
+                        onClick = { showAppearanceMenu = true },
+                        modifier = Modifier.size(42.dp)
+                    ) {
+                        Icon(
+                            imageVector = when (settings.appAppearance) {
+                                AppAppearance.SYSTEM -> Icons.Rounded.BrightnessAuto
+                                AppAppearance.LIGHT -> Icons.Rounded.LightMode
+                                AppAppearance.DARK -> Icons.Rounded.DarkMode
+                            },
+                            contentDescription = "应用外观",
+                            tint = glass.textPrimary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    DropdownMenu(
+                        expanded = showAppearanceMenu,
+                        onDismissRequest = { showAppearanceMenu = false }
+                    ) {
+                        AppAppearance.entries.forEach { mode ->
+                            val selected = settings.appAppearance == mode
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = mode.label,
+                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                        color = if (selected) glass.accent else glass.textPrimary
+                                    )
+                                },
+                                trailingIcon = if (selected) {
+                                    {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Check,
+                                            contentDescription = null,
+                                            tint = glass.accent,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                } else null,
+                                onClick = {
+                                    showAppearanceMenu = false
+                                    onChangeAppearance(mode)
+                                }
+                            )
+                        }
+                    }
+                }
+
                 LiquidGlassButton(
                     onClick = { isGridMode = !isGridMode },
                     modifier = Modifier.size(42.dp)
@@ -208,47 +266,7 @@ fun BookshelfScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // Compact App Appearance Switcher at top of Homepage
-        val appCardBg = if (glass.isDark) Color(0xFF1C1C1E) else Color(0xFFE5E5EA).copy(alpha = 0.72f)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(appCardBg)
-                .padding(3.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            AppAppearance.entries.forEach { mode ->
-                val selected = settings.appAppearance == mode
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(9.dp))
-                        .background(
-                            if (selected) {
-                                if (glass.isDark) Color(0xFF3A3A3C) else Color(0xFFFFFFFF)
-                            } else {
-                                Color.Transparent
-                            }
-                        )
-                        .clickable { onChangeAppearance(mode) }
-                        .padding(vertical = 6.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = mode.label,
-                        color = if (selected) glass.textPrimary else glass.textSecondary,
-                        fontSize = 12.sp,
-                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
-                    )
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
         LiquidGlassSurface(
             modifier = Modifier
@@ -308,7 +326,7 @@ fun BookshelfScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(bottom = 110.dp),
+                    .padding(bottom = 96.dp),
                 contentAlignment = Alignment.Center
             ) {
                 LiquidGlassSurface(
@@ -317,7 +335,9 @@ fun BookshelfScreen(
                     strong = true
                 ) {
                     Column(
-                        modifier = Modifier.padding(28.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(28.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Icon(
@@ -331,13 +351,15 @@ fun BookshelfScreen(
                             text = if (books.isEmpty()) "书架还是空的" else "未找到匹配书籍",
                             color = glass.textPrimary,
                             fontSize = 17.sp,
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = FontWeight.SemiBold,
+                            textAlign = TextAlign.Center
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
                             text = "点击右上角「导入」选择本机文件或 Wi-Fi 传书传字体",
                             color = glass.textSecondary,
-                            fontSize = 13.sp
+                            fontSize = 13.sp,
+                            textAlign = TextAlign.Center
                         )
                     }
                 }

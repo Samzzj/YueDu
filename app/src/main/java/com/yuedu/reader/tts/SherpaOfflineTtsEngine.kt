@@ -6,6 +6,7 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
+import com.k2fsa.sherpa.onnx.OfflineTtsKokoroModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsMatchaModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig
@@ -44,9 +45,9 @@ class SherpaOfflineTtsEngine(private val context: Context) {
     )
 
     companion object {
-        const val BUILTIN_YUNXI_KEY = "__builtin_yunxi_vits__"
-        const val BUILTIN_YUNXI_ASSET_DIR = "tts_models/vits-zh-hf-fanchen-wnj"
-        const val YUNXI_BUILTIN_SID = 0
+        const val BUILTIN_YUNXI_KEY = "__builtin_yunxi_kokoro_fp32__"
+        const val BUILTIN_YUNXI_ASSET_DIR = "tts_models/kokoro-multi-lang-v1_0"
+        const val YUNXI_BUILTIN_SID = 50
 
         const val PACK_MATCHA_BAKER = "matcha_baker"
         const val PACK_VITS_THERESA = "vits_theresa"
@@ -160,13 +161,14 @@ class SherpaOfflineTtsEngine(private val context: Context) {
                 when (ch) {
                     '，', '。', '！', '？' -> {
                         if (!lastWasPause && sb.isNotEmpty()) {
-                            sb.append(ch)
+                            // Convert clause comma to period so sherpa-onnx never leaves a dangling ',' triggering trailing vowel artifacts
+                            sb.append(if (ch == '，') '。' else ch)
                             lastWasPause = true
                         }
                     }
                     ',', ';', '；', ':', '：', '、', '—', '–', '-', '~', '～', '…', '·' -> {
                         if (!lastWasPause && sb.isNotEmpty()) {
-                            sb.append('，')
+                            sb.append('。')
                             lastWasPause = true
                         }
                     }
@@ -277,7 +279,7 @@ class SherpaOfflineTtsEngine(private val context: Context) {
 
     private val builtinAvailableCached: Boolean by lazy {
         runCatching {
-            context.assets.list(BUILTIN_YUNXI_ASSET_DIR)?.contains("vits-zh-hf-fanchen-wnj.onnx") == true
+            context.assets.list(BUILTIN_YUNXI_ASSET_DIR)?.contains("model.onnx") == true
         }.getOrDefault(false)
     }
 
@@ -289,7 +291,14 @@ class SherpaOfflineTtsEngine(private val context: Context) {
 
     fun isPackDownloaded(packId: String): Boolean {
         val dir = File(modelsRoot, packId)
-        return File(dir, ".ready").exists()
+        if (!File(dir, ".ready").exists()) return false
+        val pack = modelPacks[packId] ?: return true
+        if (pack.kind == PackKind.MATCHA) {
+            val modelRoot = resolveModelSubDir(dir)
+            val hasVocos = modelRoot.listFiles()?.any { it.name.contains("vocos") && it.name.endsWith(".onnx") } == true
+            if (!hasVocos) return false
+        }
+        return true
     }
 
     suspend fun downloadAndInstallPack(
@@ -306,19 +315,33 @@ class SherpaOfflineTtsEngine(private val context: Context) {
         val targetDir = File(modelsRoot, packId)
         try {
             CommercialFontsCatalog.downloadFontFromMirrors(pack.downloadUrls, archiveFile) { dlProg ->
-                onProgress((dlProg * 0.85f).coerceIn(0f, 0.85f))
+                onProgress((dlProg * 0.78f).coerceIn(0f, 0.78f))
             }
 
             if (targetDir.exists()) targetDir.deleteRecursively()
             targetDir.mkdirs()
 
             extractTarBz2(archiveFile, targetDir)
-            onProgress(0.96f)
+            onProgress(0.84f)
 
             val modelRoot = resolveModelSubDir(targetDir)
             val hasOnnx = modelRoot.listFiles()?.any { it.name.endsWith(".onnx") } == true
             if (!hasOnnx) {
                 throw IllegalStateException("离线模型解压不完整")
+            }
+
+            // Matcha Baker archive does not bundle vocos-22khz-univ.onnx; fetch vocoder automatically if missing
+            if (pack.kind == PackKind.MATCHA &&
+                modelRoot.listFiles()?.any { it.name.contains("vocos") && it.name.endsWith(".onnx") } != true
+            ) {
+                val vocoderFile = File(modelRoot, "vocos-22khz-univ.onnx")
+                val vocoderUrls = listOf(
+                    "https://gh-proxy.com/https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-22khz-univ.onnx",
+                    "https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-22khz-univ.onnx"
+                )
+                CommercialFontsCatalog.downloadFontFromMirrors(vocoderUrls, vocoderFile) { vProg ->
+                    onProgress((0.84f + vProg * 0.14f).coerceIn(0.84f, 0.98f))
+                }
             }
 
             File(targetDir, ".ready").createNewFile()
@@ -379,15 +402,16 @@ class SherpaOfflineTtsEngine(private val context: Context) {
         val dir = BUILTIN_YUNXI_ASSET_DIR
         val config = OfflineTtsConfig(
             model = OfflineTtsModelConfig(
-                vits = OfflineTtsVitsModelConfig(
-                    model = "$dir/vits-zh-hf-fanchen-wnj.onnx",
-                    lexicon = "$dir/lexicon.txt",
-                    tokens = "$dir/tokens.txt"
+                kokoro = OfflineTtsKokoroModelConfig(
+                    model = "$dir/model.onnx",
+                    voices = "$dir/voices.bin",
+                    tokens = "$dir/tokens.txt",
+                    lexicon = "$dir/lexicon-us-en.txt,$dir/lexicon-zh.txt"
                 ),
-                numThreads = 2,
+                numThreads = 4,
                 provider = "cpu"
             ),
-            ruleFsts = "$dir/phone.fst,$dir/date.fst,$dir/number.fst"
+            ruleFsts = "$dir/phone-zh.fst,$dir/date-zh.fst,$dir/number-zh.fst"
         )
         val created = OfflineTts(assetManager = context.assets, config = config)
         loadedKey = BUILTIN_YUNXI_KEY

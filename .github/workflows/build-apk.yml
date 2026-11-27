@@ -39,28 +39,30 @@ jobs:
           curl -L --fail --retry 3 -o app/libs/sherpa-onnx-2.0.3.aar \
             https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.3/sherpa-onnx-2.0.3.aar
 
-      - name: Cache Built-in Yunxi FP32 Voice Model
-        id: cache-yunxi-vits
+      - name: Cache Built-in Yunxi Kokoro FP32 Model
+        id: cache-yunxi-kokoro-fp32
         uses: actions/cache@v4
         with:
-          path: app/src/main/assets/tts_models/vits-zh-hf-fanchen-wnj
-          key: yunxi-vits-fp32-wnj-v1
+          path: app/src/main/assets/tts_models/kokoro-multi-lang-v1_0
+          key: yunxi-kokoro-fp32-v1
 
-      - name: Prepare Built-in Yunxi FP32 Voice Assets
-        if: steps.cache-yunxi-vits.outputs.cache-hit != 'true'
+      - name: Prepare Built-in Yunxi Kokoro FP32 Assets
+        if: steps.cache-yunxi-kokoro-fp32.outputs.cache-hit != 'true'
         run: |
-          mkdir -p /tmp/yunxi_dl app/src/main/assets/tts_models/vits-zh-hf-fanchen-wnj
-          curl -L --fail --retry 3 -o /tmp/yunxi_dl/wnj.tar.bz2 \
-            https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-zh-hf-fanchen-wnj.tar.bz2
-          tar -xjf /tmp/yunxi_dl/wnj.tar.bz2 -C /tmp/yunxi_dl
-          cp /tmp/yunxi_dl/vits-zh-hf-fanchen-wnj/vits-zh-hf-fanchen-wnj.onnx \
-             /tmp/yunxi_dl/vits-zh-hf-fanchen-wnj/lexicon.txt \
-             /tmp/yunxi_dl/vits-zh-hf-fanchen-wnj/tokens.txt \
-             /tmp/yunxi_dl/vits-zh-hf-fanchen-wnj/phone.fst \
-             /tmp/yunxi_dl/vits-zh-hf-fanchen-wnj/date.fst \
-             /tmp/yunxi_dl/vits-zh-hf-fanchen-wnj/number.fst \
-             app/src/main/assets/tts_models/vits-zh-hf-fanchen-wnj/
-          rm -rf /tmp/yunxi_dl
+          mkdir -p /tmp/kokoro_dl app/src/main/assets/tts_models/kokoro-multi-lang-v1_0
+          curl -L --fail --retry 3 -o /tmp/kokoro_dl/kokoro.tar.bz2 \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2
+          tar -xjf /tmp/kokoro_dl/kokoro.tar.bz2 -C /tmp/kokoro_dl
+          cp /tmp/kokoro_dl/kokoro-multi-lang-v1_0/model.onnx \
+             /tmp/kokoro_dl/kokoro-multi-lang-v1_0/voices.bin \
+             /tmp/kokoro_dl/kokoro-multi-lang-v1_0/tokens.txt \
+             /tmp/kokoro_dl/kokoro-multi-lang-v1_0/lexicon-zh.txt \
+             /tmp/kokoro_dl/kokoro-multi-lang-v1_0/lexicon-us-en.txt \
+             /tmp/kokoro_dl/kokoro-multi-lang-v1_0/date-zh.fst \
+             /tmp/kokoro_dl/kokoro-multi-lang-v1_0/number-zh.fst \
+             /tmp/kokoro_dl/kokoro-multi-lang-v1_0/phone-zh.fst \
+             app/src/main/assets/tts_models/kokoro-multi-lang-v1_0/
+          rm -rf /tmp/kokoro_dl
 
       - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
@@ -72,28 +74,28 @@ jobs:
 
       - name: Rename and Verify APK
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk YueDu-v0.6.0-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk YueDu-v0.7.0-debug.apk
           APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n1)
-          "$APKSIGNER" verify --print-certs YueDu-v0.6.0-debug.apk
+          "$APKSIGNER" verify --print-certs YueDu-v0.7.0-debug.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: YueDu-v0.6.0-debug-apk
-          path: YueDu-v0.6.0-debug.apk
+          name: YueDu-v0.7.0-debug-apk
+          path: YueDu-v0.7.0-debug.apk
 
-      - name: Publish v0.6.0 Release
+      - name: Publish v0.7.0 Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.6.0-preview
-          name: 悦读 YueDu v0.6.0
+          tag_name: v0.7.0-preview
+          name: 悦读 YueDu v0.7.0
           body: |
-            悦读 YueDu v0.6.0 更新内容：
-            - 优化在线与离线朗读引擎路由：有网优先使用高保真拟真在线音色并支持三句并发预加载与平滑衔接，无网自动无缝切换内置云希；试听与阅读声音完全一致
-            - 离线模型加入完整中文数字、标点规范化与流式连续音频输出，修复跳字、漏字与句间卡顿问题
-            - 新增后台媒体前台服务与 WakeLock 唤醒锁，息屏与后台切换不再断音
-            - AI 阅读页状态标签「已离线」更名为「已下载」，并将「应用外观」切换栏移至书架首页上方
-          files: YueDu-v0.6.0-debug.apk
+            悦读 YueDu v0.7.0 更新内容：
+            - 安装包内置 Kokoro FP32 全精度「云希」离线音色，试听与正文朗读完全一致且无底噪
+            - 离线语音文本规范化将逗号收音转为句号分隔，彻底消除句尾悬空逗号「耶」拖音
+            - 修复「小贝」离线包自动补充下载 vocos-22khz-univ 声码器的问题
+            - 书架顶部亮暗外观切换收纳至右上角圆形按钮，并修复「书架还是空的」居中对齐
+          files: YueDu-v0.7.0-debug.apk
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -260,17 +260,35 @@ class LocalTtsManager(context: Context) {
 
     /**
      * Unified voice routing for BOTH previewVoice and speakFromIndex so preview and reading ALWAYS match:
-     * 1) If user explicitly downloaded this voice's offline pack -> use that downloaded offline pack.
-     * 2) Else (including built-in 云希 when online) -> use authentic EdgeNeuralTtsEngine.
-     * 3) If network is unavailable / Edge fails -> seamlessly fall back to built-in APK 云希.
+     * 1) If voice is built-in offline (云希 Kokoro FP32) -> run built-in Kokoro FP32 directly.
+     * 2) If user downloaded this voice's offline pack -> use that downloaded offline pack.
+     * 3) Else -> use EdgeNeuralTtsEngine online, falling back to built-in Kokoro FP32 云希 when offline.
      */
     fun previewVoice(settings: TtsSettings) {
-        val sampleText = "你好，欢迎使用悦读，现在为你朗读精彩小说。"
+        val sampleText = "清晨的微风拂过书页，杨凌合上手中的古籍，缓缓走向窗前，轻声说道，这一章的故事才刚刚开始。"
         previewJob?.cancel()
         releaseAllAudio()
 
         val selectedOption = resolveVoice(settings.voiceId)
         val packId = selectedOption.offlinePackId
+
+        if (selectedOption.isBuiltinOffline && sherpaEngine.isBuiltinAvailable()) {
+            previewJob = scope.launch {
+                runCatching {
+                    val audio = sherpaEngine.synthesizeBuiltinToPcm(
+                        sid = selectedOption.offlineSid,
+                        rawText = sampleText,
+                        speed = settings.speechRate
+                    )
+                    sherpaEngine.playStreamingPcm(audio)
+                }.onFailure {
+                    if (it !is CancellationException) {
+                        speakLocally(sampleText, settings, "preview")
+                    }
+                }
+            }
+            return
+        }
 
         if (packId != null && sherpaEngine.isPackDownloaded(packId)) {
             previewJob = scope.launch {
@@ -340,6 +358,17 @@ class LocalTtsManager(context: Context) {
     private fun speakFromIndex(startIdx: Int) {
         val selectedOption = resolveVoice(currentSettings.voiceId)
         val packId = selectedOption.offlinePackId
+
+        if (selectedOption.isBuiltinOffline && sherpaEngine.isBuiltinAvailable()) {
+            speakOfflineLoopWithLookahead(startIdx) { sentence ->
+                sherpaEngine.synthesizeBuiltinToPcm(
+                    sid = selectedOption.offlineSid,
+                    rawText = sentence.text,
+                    speed = currentSettings.speechRate
+                )
+            }
+            return
+        }
 
         if (packId != null && sherpaEngine.isPackDownloaded(packId)) {
             speakOfflineLoopWithLookahead(startIdx) { sentence ->
