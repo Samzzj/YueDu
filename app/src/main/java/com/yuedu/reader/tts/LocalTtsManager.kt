@@ -60,6 +60,11 @@ class LocalTtsManager(context: Context) {
     private var onChapterFinishedCallback: (() -> Unit)? = null
     private var suppressNextLocalDone: Boolean = false
 
+    // Cross-chapter lookahead caches so chapter transitions play seamlessly with zero stall
+    private var nextChapterSentences: List<TtsSentence> = emptyList()
+    private val nextChapterPrefetched = HashMap<Int, Deferred<ByteArray>>()
+    private var nextChapterOfflineDeferred: Deferred<SherpaOfflineTtsEngine.SynthesizedAudio>? = null
+
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
 
@@ -181,6 +186,7 @@ class LocalTtsManager(context: Context) {
         if (sentences.isEmpty()) return
         previewJob?.cancel()
         playJob?.cancel()
+        clearNextChapterPreload()
         releaseAllAudio()
 
         currentSentences = sentences
@@ -197,12 +203,51 @@ class LocalTtsManager(context: Context) {
         speakFromIndex(currentIndex)
     }
 
+    fun preloadNextChapter(sentences: List<TtsSentence>) {
+        if (sentences == nextChapterSentences) return
+        val firstCh = sentences.firstOrNull()?.chapterIndex
+        if (firstCh != null && firstCh == nextChapterSentences.firstOrNull()?.chapterIndex && sentences.size == nextChapterSentences.size) {
+            return
+        }
+        nextChapterPrefetched.values.forEach { it.cancel() }
+        nextChapterPrefetched.clear()
+        nextChapterOfflineDeferred?.cancel()
+        nextChapterOfflineDeferred = null
+        nextChapterSentences = sentences
+    }
+
+    private fun clearNextChapterPreload() {
+        nextChapterPrefetched.values.forEach { it.cancel() }
+        nextChapterPrefetched.clear()
+        nextChapterOfflineDeferred?.cancel()
+        nextChapterOfflineDeferred = null
+        nextChapterSentences = emptyList()
+    }
+
     fun continueNextChapter(sentences: List<TtsSentence>) {
         if (!_isPlaying.value || sentences.isEmpty()) return
+        val matchesPreload = nextChapterSentences.isNotEmpty() &&
+            sentences.firstOrNull()?.chapterIndex == nextChapterSentences.firstOrNull()?.chapterIndex
+        val handedOffOnline = if (matchesPreload && nextChapterPrefetched.isNotEmpty()) {
+            HashMap(nextChapterPrefetched).also { nextChapterPrefetched.clear() }
+        } else {
+            nextChapterPrefetched.values.forEach { it.cancel() }
+            nextChapterPrefetched.clear()
+            null
+        }
+        val handedOffOffline = if (matchesPreload) {
+            nextChapterOfflineDeferred.also { nextChapterOfflineDeferred = null }
+        } else {
+            nextChapterOfflineDeferred?.cancel()
+            nextChapterOfflineDeferred = null
+            null
+        }
+        nextChapterSentences = emptyList()
+
         currentSentences = sentences
         currentIndex = 0
         _isPaused.value = false
-        speakFromIndex(0)
+        speakFromIndex(0, handedOffOnline, handedOffOffline)
     }
 
     fun pause() {
@@ -226,6 +271,7 @@ class LocalTtsManager(context: Context) {
         sleepJob = null
         previewJob?.cancel()
         playJob?.cancel()
+        clearNextChapterPreload()
         releaseAllAudio()
         TtsPlaybackService.stop(appContext)
         _sleepRemainingSeconds.value = 0
@@ -248,6 +294,7 @@ class LocalTtsManager(context: Context) {
             val activeVoice = resolveVoice(newSettings.voiceId)
             TtsPlaybackService.startOrUpdate(appContext, "正在使用「${activeVoice.displayLabel}」朗读")
             playJob?.cancel()
+            clearNextChapterPreload()
             releaseAllAudio()
             speakFromIndex(currentIndex)
         }
@@ -342,12 +389,16 @@ class LocalTtsManager(context: Context) {
         val player: MediaPlayer
     )
 
-    private fun speakFromIndex(startIdx: Int) {
+    private fun speakFromIndex(
+        startIdx: Int,
+        initialOnlinePrefetched: Map<Int, Deferred<ByteArray>>? = null,
+        initialOfflineFirst: Deferred<SherpaOfflineTtsEngine.SynthesizedAudio>? = null
+    ) {
         val selectedOption = resolveVoice(currentSettings.voiceId)
         val packId = selectedOption.offlinePackId
 
         if (packId != null && sherpaEngine.isPackDownloaded(packId)) {
-            speakOfflineLoopWithLookahead(startIdx) { sentence ->
+            speakOfflineLoopWithLookahead(startIdx, initialOfflineFirst) { sentence ->
                 sherpaEngine.synthesizeDownloadedToPcm(
                     packId = packId,
                     sid = selectedOption.offlineSid,
@@ -358,14 +409,18 @@ class LocalTtsManager(context: Context) {
             return
         }
 
-        // Online Edge Neural TTS with 4-sentence lookahead prefetch + pre-prepared MediaPlayer handoff
-        // and built-in Kokoro FP32 云希 offline fallback when offline.
+        // Online Edge Neural TTS with 6-sentence lookahead + cross-chapter prefetch + pre-prepared MediaPlayer handoff
+        // and resilient fallback to built-in Kokoro FP32 云希 only on sustained network failure.
         playJob?.cancel()
         playJob = scope.launch {
             var idx = startIdx
             val prefetched = HashMap<Int, Deferred<ByteArray>>()
+            if (initialOnlinePrefetched != null) {
+                prefetched.putAll(initialOnlinePrefetched)
+            }
             val pendingClips = java.util.Collections.synchronizedList(mutableListOf<PreparedClip>())
             var nextClipDeferred: Deferred<PreparedClip>? = null
+            var consecutiveNetworkFailures = 0
 
             fun enqueuePrefetch(targetIdx: Int) {
                 if (targetIdx >= currentSentences.size || prefetched.containsKey(targetIdx)) return
@@ -376,6 +431,24 @@ class LocalTtsManager(context: Context) {
                         voiceName = selectedOption.engineVoiceName,
                         speechRate = currentSettings.speechRate
                     )
+                }
+            }
+
+            fun enqueueNextChapterIfNeeded() {
+                if (nextChapterSentences.isEmpty()) return
+                val limit = minOf(3, nextChapterSentences.size)
+                for (nIdx in 0 until limit) {
+                    if (!nextChapterPrefetched.containsKey(nIdx)) {
+                        val nextSentence = nextChapterSentences[nIdx]
+                        // Launch on parent scope so in-flight chapter-start audio survives chapter transition
+                        nextChapterPrefetched[nIdx] = scope.async(Dispatchers.IO) {
+                            EdgeNeuralTtsEngine.synthesizeToMp3Bytes(
+                                text = nextSentence.text,
+                                voiceName = selectedOption.engineVoiceName,
+                                speechRate = currentSettings.speechRate
+                            )
+                        }
+                    }
                 }
             }
 
@@ -417,9 +490,12 @@ class LocalTtsManager(context: Context) {
                     _activeSentence.value = sentence
 
                     if (nextClipDeferred == null) enqueuePrefetch(idx)
-                    enqueuePrefetch(idx + 1)
-                    enqueuePrefetch(idx + 2)
-                    enqueuePrefetch(idx + 3)
+                    for (ahead in 1..5) {
+                        enqueuePrefetch(idx + ahead)
+                    }
+                    if (idx >= currentSentences.size - 4) {
+                        enqueueNextChapterIfNeeded()
+                    }
 
                     val currentClipDeferred = nextClipDeferred ?: prepareClipAsync(prefetched.remove(idx)!!)
                     nextClipDeferred = if (idx + 1 < currentSentences.size) {
@@ -431,6 +507,7 @@ class LocalTtsManager(context: Context) {
                     try {
                         val clip = currentClipDeferred.await()
                         pendingClips.remove(clip)
+                        consecutiveNetworkFailures = 0
                         if (!_isPlaying.value || _isPaused.value) {
                             runCatching { clip.player.release() }
                             runCatching { clip.file.delete() }
@@ -439,21 +516,41 @@ class LocalTtsManager(context: Context) {
                         playPreparedClipBlocking(clip)
                     } catch (ce: CancellationException) {
                         throw ce
+                    } catch (_: EdgeNeuralTtsEngine.EmptyAudioException) {
+                        // Single unpronounceable chunk: skip gracefully without blowing away lookahead cache
                     } catch (_: Exception) {
-                        // Online synthesis failed after retries -> fall back to built-in offline Yunxi smoothly
-                        cleanupPending()
-                        if (sherpaEngine.isBuiltinAvailable()) {
-                            speakOfflineLoopWithLookahead(idx) { fallbackSentence ->
-                                sherpaEngine.synthesizeBuiltinToPcm(
-                                    sid = SherpaOfflineTtsEngine.YUNXI_BUILTIN_SID,
-                                    rawText = fallbackSentence.text,
-                                    speed = currentSettings.speechRate
-                                )
+                        consecutiveNetworkFailures++
+                        if (consecutiveNetworkFailures < 2) {
+                            // Single transient glitch: fallback only this sentence if builtin is ready or skip, keeping online cache intact
+                            if (sherpaEngine.isBuiltinAvailable()) {
+                                runCatching {
+                                    val audio = sherpaEngine.synthesizeBuiltinToPcm(
+                                        sid = SherpaOfflineTtsEngine.YUNXI_BUILTIN_SID,
+                                        rawText = sentence.text,
+                                        speed = currentSettings.speechRate
+                                    )
+                                    if (audio.pcm.isNotEmpty() && _isPlaying.value && !_isPaused.value) {
+                                        sherpaEngine.playStreamingPcm(audio)
+                                    }
+                                }
                             }
                         } else {
-                            speakSentenceLocallyFallback(idx)
+                            // Sustained network outage -> seamlessly switch to built-in offline Yunxi
+                            cleanupPending()
+                            clearNextChapterPreload()
+                            if (sherpaEngine.isBuiltinAvailable()) {
+                                speakOfflineLoopWithLookahead(idx) { fallbackSentence ->
+                                    sherpaEngine.synthesizeBuiltinToPcm(
+                                        sid = SherpaOfflineTtsEngine.YUNXI_BUILTIN_SID,
+                                        rawText = fallbackSentence.text,
+                                        speed = currentSettings.speechRate
+                                    )
+                                }
+                            } else {
+                                speakSentenceLocallyFallback(idx)
+                            }
+                            return@launch
                         }
-                        return@launch
                     }
 
                     if (!_isPlaying.value || _isPaused.value) break
@@ -507,12 +604,13 @@ class LocalTtsManager(context: Context) {
 
     private fun speakOfflineLoopWithLookahead(
         startIdx: Int,
+        initialFirstDeferred: Deferred<SherpaOfflineTtsEngine.SynthesizedAudio>? = null,
         synthesizer: suspend (TtsSentence) -> SherpaOfflineTtsEngine.SynthesizedAudio
     ) {
         playJob?.cancel()
         playJob = scope.launch {
             var idx = startIdx
-            var nextDeferred: Deferred<SherpaOfflineTtsEngine.SynthesizedAudio>? = null
+            var nextDeferred: Deferred<SherpaOfflineTtsEngine.SynthesizedAudio>? = initialFirstDeferred
 
             try {
                 while (idx < currentSentences.size && _isPlaying.value && !_isPaused.value) {
@@ -524,13 +622,19 @@ class LocalTtsManager(context: Context) {
                         synthesizer(sentence)
                     }
 
-                    nextDeferred = if (idx + 1 < currentSentences.size) {
+                    if (idx + 1 < currentSentences.size) {
                         val nextSentence = currentSentences[idx + 1]
-                        async(Dispatchers.IO) {
+                        nextDeferred = async(Dispatchers.IO) {
                             synthesizer(nextSentence)
                         }
                     } else {
-                        null
+                        nextDeferred = null
+                        if (nextChapterSentences.isNotEmpty() && nextChapterOfflineDeferred == null) {
+                            val firstNext = nextChapterSentences.first()
+                            nextChapterOfflineDeferred = scope.async(Dispatchers.IO) {
+                                synthesizer(firstNext)
+                            }
+                        }
                     }
 
                     try {
@@ -679,34 +783,43 @@ class LocalTtsManager(context: Context) {
 
     companion object {
         private val sentenceBreakChars = setOf('。', '！', '？', '；', '…', '\n', '.', '!', '?')
+        private val closingPunctChars = setOf('”', '’', '」', '』', ')', '）', '"', '\'')
+
+        private data class RawSegment(
+            val startOffset: Int,
+            val endOffset: Int,
+            val text: String,
+            val isTitle: Boolean
+        )
 
         fun splitChapterIntoSentences(
             paragraphs: List<TxtBookEngine.ChapterParagraph>,
             chapterIndex: Int
         ): List<TtsSentence> {
-            val result = mutableListOf<TtsSentence>()
+            val rawSegments = mutableListOf<RawSegment>()
             for (para in paragraphs) {
                 val text = para.text
                 var segStart = 0
                 var i = 0
                 while (i < text.length) {
                     val ch = text[i]
-                    val isEnd = (ch in sentenceBreakChars && (i - segStart >= 32 || ch == '\n')) ||
-                        (i - segStart >= 100 && (ch == '，' || ch == ','))
+                    val segLen = i - segStart
+                    val isEnd = (ch in sentenceBreakChars && (segLen >= 20 || ch == '\n')) ||
+                        (segLen >= 85 && (ch == '，' || ch == ',')) ||
+                        (segLen >= 125)
                     if (isEnd || i == text.lastIndex) {
                         var end = i + 1
-                        while (end < text.length && text[end] in setOf('”', '’', '」', '』', ')', '）', '"', '\'')) {
+                        while (end < text.length && text[end] in closingPunctChars) {
                             end++
                         }
                         val sub = text.substring(segStart, end).trim()
                         if (sub.any { it.isLetterOrDigit() }) {
-                            result.add(
-                                TtsSentence(
-                                    index = result.size,
-                                    chapterIndex = chapterIndex,
+                            rawSegments.add(
+                                RawSegment(
                                     startOffset = para.charStartOffset + segStart,
                                     endOffset = para.charStartOffset + end,
-                                    text = sub
+                                    text = sub,
+                                    isTitle = para.isTitle
                                 )
                             )
                         }
@@ -717,6 +830,67 @@ class LocalTtsManager(context: Context) {
                     i++
                 }
             }
+
+            if (rawSegments.isEmpty()) return emptyList()
+
+            // Coalesce consecutive short non-title lines/paragraphs so dialogue runs don't spam per-line network requests
+            val result = mutableListOf<TtsSentence>()
+            var bufStart = -1
+            var bufEnd = -1
+            var bufCount = 0
+            val bufText = StringBuilder()
+
+            fun flushBuffer() {
+                if (bufText.isNotEmpty()) {
+                    result.add(
+                        TtsSentence(
+                            index = result.size,
+                            chapterIndex = chapterIndex,
+                            startOffset = bufStart,
+                            endOffset = bufEnd,
+                            text = bufText.toString()
+                        )
+                    )
+                    bufText.clear()
+                    bufStart = -1
+                    bufEnd = -1
+                    bufCount = 0
+                }
+            }
+
+            for (seg in rawSegments) {
+                if (seg.isTitle) {
+                    flushBuffer()
+                    result.add(
+                        TtsSentence(
+                            index = result.size,
+                            chapterIndex = chapterIndex,
+                            startOffset = seg.startOffset,
+                            endOffset = seg.endOffset,
+                            text = seg.text
+                        )
+                    )
+                    continue
+                }
+
+                if (bufText.isEmpty()) {
+                    bufStart = seg.startOffset
+                    bufEnd = seg.endOffset
+                    bufText.append(seg.text)
+                    bufCount = 1
+                } else if (bufCount < 3 && bufText.length < 48 && bufText.length + 1 + seg.text.length <= 84) {
+                    bufText.append('\n').append(seg.text)
+                    bufEnd = seg.endOffset
+                    bufCount++
+                } else {
+                    flushBuffer()
+                    bufStart = seg.startOffset
+                    bufEnd = seg.endOffset
+                    bufText.append(seg.text)
+                    bufCount = 1
+                }
+            }
+            flushBuffer()
             return result
         }
     }

@@ -192,6 +192,9 @@ fun YueDuApp(
                 onStartTts = { sentences, startIdx, onChapterDone ->
                     ttsManager.startReading(sentences, startIdx, ttsSettings, onChapterDone)
                 },
+                onPreloadTtsNextChapter = { nextSentences ->
+                    ttsManager.preloadNextChapter(nextSentences)
+                },
                 onContinueTtsNextChapter = { sentences ->
                     ttsManager.continueNextChapter(sentences)
                 },

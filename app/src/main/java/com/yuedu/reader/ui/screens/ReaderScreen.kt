@@ -199,6 +199,7 @@ fun ReaderScreen(
     onSaveProgress: (bookId: String, chapterIdx: Int, charOffset: Int, progress: Float) -> Unit,
     onUpdateSettings: ((ReaderSettings) -> ReaderSettings) -> Unit,
     onStartTts: (sentences: List<TtsSentence>, startIdx: Int, onChapterDone: () -> Unit) -> Unit,
+    onPreloadTtsNextChapter: (nextSentences: List<TtsSentence>) -> Unit,
     onContinueTtsNextChapter: (sentences: List<TtsSentence>) -> Unit,
     onPauseResumeTts: () -> Unit,
     onStopTts: () -> Unit,
@@ -388,6 +389,14 @@ fun ReaderScreen(
 
             prevPaginated = if (safeIdx > 0) paginateChapterByIndex(safeIdx - 1).second else null
             nextPaginated = if (safeIdx < chapters.lastIndex) paginateChapterByIndex(safeIdx + 1).second else null
+        }
+
+        // Feed next chapter's sentences to TTS engine so chapter boundaries never stall
+        LaunchedEffect(nextPaginated, isTtsPlaying, chapterIndex) {
+            if (isTtsPlaying) {
+                val nextSents = nextPaginated?.takeIf { it.chapterIndex == chapterIndex + 1 }?.sentences.orEmpty()
+                onPreloadTtsNextChapter(nextSents)
+            }
         }
 
         // Persist progress ONLY when currentPaginated matches chapterIndex

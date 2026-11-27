@@ -125,12 +125,14 @@ object EdgeNeuralTtsEngine {
     )
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .writeTimeout(8, TimeUnit.SECONDS)
+        .connectTimeout(4, TimeUnit.SECONDS)
+        .readTimeout(8, TimeUnit.SECONDS)
+        .writeTimeout(5, TimeUnit.SECONDS)
         .pingInterval(15, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
+
+    class EmptyAudioException(message: String) : IllegalStateException(message)
 
     suspend fun synthesizeToMp3Bytes(
         text: String,
@@ -138,16 +140,18 @@ object EdgeNeuralTtsEngine {
         speechRate: Float
     ): ByteArray {
         var lastErr: Exception? = null
-        repeat(3) { attempt ->
+        repeat(2) { attempt ->
             try {
                 return executeSynthesis(text, voiceName, speechRate)
+            } catch (e: EmptyAudioException) {
+                throw e
             } catch (e: SkewException) {
                 EdgeDrm.adjustClockSkew(e.serverDateHeader)
                 lastErr = e
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 lastErr = e
-                if (attempt < 2) kotlinx.coroutines.delay(250L * (attempt + 1))
+                if (attempt == 0) kotlinx.coroutines.delay(180L)
             }
         }
         throw lastErr ?: IllegalStateException("在线语音合成失败")
@@ -210,7 +214,7 @@ object EdgeNeuralTtsEngine {
                     val bytes = synchronized(audioStream) { audioStream.toByteArray() }
                     if (cont.isActive) {
                         if (bytes.isEmpty()) {
-                            cont.resumeWithException(IllegalStateException("未收到音频数据"))
+                            cont.resumeWithException(EmptyAudioException("未收到音频数据"))
                         } else {
                             cont.resume(bytes)
                         }

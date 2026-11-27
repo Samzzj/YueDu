@@ -74,27 +74,27 @@ jobs:
 
       - name: Rename and Verify APK
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk YueDu-v0.8.0-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk YueDu-v0.8.1-debug.apk
           APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n1)
-          "$APKSIGNER" verify --print-certs YueDu-v0.8.0-debug.apk
+          "$APKSIGNER" verify --print-certs YueDu-v0.8.1-debug.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: YueDu-v0.8.0-debug-apk
-          path: YueDu-v0.8.0-debug.apk
+          name: YueDu-v0.8.1-debug-apk
+          path: YueDu-v0.8.1-debug.apk
 
-      - name: Publish v0.8.0 Release
+      - name: Publish v0.8.1 Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.8.0-preview
-          name: 悦读 YueDu v0.8.0
+          tag_name: v0.8.1-preview
+          name: 悦读 YueDu v0.8.1
           body: |
-            悦读 YueDu v0.8.0 更新内容：
-            - 书架右上角外观按钮改为一键直接切换亮色/暗色（月亮/太阳图标，点击即切换无需弹窗）
-            - 「云希」联网朗读恢复为高情感拟真在线引擎，并加入预准备播放器实现句间零卡顿连贯播报；断网时自动无缝切入内置 Kokoro FP32 兜底
-            - 优化离线合成静音裁剪与逗号分段策略，明显缩短停顿并保持更自然的停顿韵律
-          files: YueDu-v0.8.0-debug.apk
+            悦读 YueDu v0.8.1 更新内容：
+            - 优化 AI 朗读连续短段落（对话流）断句与合并策略，大幅减少频繁建连造成的段落停顿卡顿
+            - 新增跨章节提前预加载缓存（朗读至章末前 4 句时提前合成下一章开头），实现换章无缝衔接
+            - 收紧单句在线合成超时并加入单句容错，避免偶发空音频或单次网络抖动触发离线大模型冷加载卡顿
+          files: YueDu-v0.8.1-debug.apk
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
