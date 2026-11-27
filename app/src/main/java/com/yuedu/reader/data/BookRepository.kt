@@ -638,9 +638,15 @@ class BookRepository(private val context: Context) {
         if (!ttsSettingsMetaFile.exists()) return TtsSettings()
         return runCatching {
             val o = JSONObject(ttsSettingsMetaFile.readText(StandardCharsets.UTF_8))
+            val rawVoice = o.optString("voiceId", "edge:zh-CN-YunxiNeural")
+            val migratedVoice = if (rawVoice.startsWith("aishell:") || rawVoice.startsWith("local_")) {
+                "edge:zh-CN-YunxiNeural"
+            } else {
+                rawVoice
+            }
             TtsSettings(
                 speechRate = o.optDouble("speechRate", 1.0).toFloat(),
-                voiceId = o.optString("voiceId", "edge:zh-CN-XiaoxiaoNeural"),
+                voiceId = migratedVoice,
                 sleepTimerMinutes = o.optInt("sleepTimerMinutes", 0),
                 autoFollow = o.optBoolean("autoFollow", true),
                 highlightSentence = o.optBoolean("highlightSentence", true)

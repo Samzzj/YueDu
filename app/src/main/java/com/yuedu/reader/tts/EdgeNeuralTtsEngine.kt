@@ -35,26 +35,24 @@ object EdgeNeuralTtsEngine {
     private const val WSS_URL = "wss://$BASE_URL/edge/v1?TrustedClientToken=$TRUSTED_CLIENT_TOKEN"
 
     val neuralVoices: List<TtsVoiceOption> = listOf(
-        // Kokoro v1.0 离线全系列（下载后 100% 离线，未下载前自动用 Edge 拟真在线）
-        TtsVoiceOption(
-            id = "edge:zh-CN-XiaoxiaoNeural",
-            engineVoiceName = "zh-CN-XiaoxiaoNeural",
-            displayLabel = "晓晓",
-            styleTag = "温暖自然 · 小说女声",
-            isNeural = true,
-            offlinePackId = SherpaOfflineTtsEngine.PACK_KOKORO_V1_0,
-            offlineSid = 47,
-            offlineSizeLabel = "126MB"
-        ),
+        // 云希作为安装包内置本地离线兜底默认音色，其同系列情感音色同步内置零延迟运行
         TtsVoiceOption(
             id = "edge:zh-CN-YunxiNeural",
             engineVoiceName = "zh-CN-YunxiNeural",
             displayLabel = "云希",
             styleTag = "阳光青年 · 热门小说男声",
             isNeural = true,
-            offlinePackId = SherpaOfflineTtsEngine.PACK_KOKORO_V1_0,
-            offlineSid = 50,
-            offlineSizeLabel = "126MB"
+            offlineSid = SherpaOfflineTtsEngine.YUNXI_BUILTIN_SID,
+            isBuiltinOffline = true
+        ),
+        TtsVoiceOption(
+            id = "edge:zh-CN-XiaoxiaoNeural",
+            engineVoiceName = "zh-CN-XiaoxiaoNeural",
+            displayLabel = "晓晓",
+            styleTag = "温暖自然 · 小说女声",
+            isNeural = true,
+            offlineSid = 47,
+            isBuiltinOffline = true
         ),
         TtsVoiceOption(
             id = "edge:zh-CN-YunjianNeural",
@@ -62,9 +60,8 @@ object EdgeNeuralTtsEngine {
             displayLabel = "云健",
             styleTag = "热血沉稳 · 悬疑玄幻旁白",
             isNeural = true,
-            offlinePackId = SherpaOfflineTtsEngine.PACK_KOKORO_V1_0,
             offlineSid = 49,
-            offlineSizeLabel = "126MB"
+            isBuiltinOffline = true
         ),
         TtsVoiceOption(
             id = "edge:zh-CN-XiaoyiNeural",
@@ -72,9 +69,8 @@ object EdgeNeuralTtsEngine {
             displayLabel = "晓伊",
             styleTag = "甜美灵动 · 青春女声",
             isNeural = true,
-            offlinePackId = SherpaOfflineTtsEngine.PACK_KOKORO_V1_0,
             offlineSid = 48,
-            offlineSizeLabel = "126MB"
+            isBuiltinOffline = true
         ),
         TtsVoiceOption(
             id = "edge:zh-CN-YunxiaNeural",
@@ -82,9 +78,8 @@ object EdgeNeuralTtsEngine {
             displayLabel = "云夏",
             styleTag = "清亮少年 · 轻小说音色",
             isNeural = true,
-            offlinePackId = SherpaOfflineTtsEngine.PACK_KOKORO_V1_0,
             offlineSid = 51,
-            offlineSizeLabel = "126MB"
+            isBuiltinOffline = true
         ),
         TtsVoiceOption(
             id = "edge:zh-CN-YunyangNeural",
@@ -92,9 +87,8 @@ object EdgeNeuralTtsEngine {
             displayLabel = "云扬",
             styleTag = "沉稳播音 · 纪实历史男声",
             isNeural = true,
-            offlinePackId = SherpaOfflineTtsEngine.PACK_KOKORO_V1_0,
             offlineSid = 52,
-            offlineSizeLabel = "126MB"
+            isBuiltinOffline = true
         ),
         TtsVoiceOption(
             id = "edge:zh-CN-liaoning-XiaobeiNeural",
@@ -102,9 +96,8 @@ object EdgeNeuralTtsEngine {
             displayLabel = "晓北",
             styleTag = "爽朗亲切 · 活力女声",
             isNeural = true,
-            offlinePackId = SherpaOfflineTtsEngine.PACK_KOKORO_V1_0,
             offlineSid = 45,
-            offlineSizeLabel = "126MB"
+            isBuiltinOffline = true
         ),
         TtsVoiceOption(
             id = "edge:zh-CN-shaanxi-XiaoniNeural",
@@ -112,41 +105,20 @@ object EdgeNeuralTtsEngine {
             displayLabel = "晓妮",
             styleTag = "温婉叙事 · 故事女声",
             isNeural = true,
-            offlinePackId = SherpaOfflineTtsEngine.PACK_KOKORO_V1_0,
             offlineSid = 46,
-            offlineSizeLabel = "126MB"
+            isBuiltinOffline = true
         ),
-        // 轻量 30MB AISHELL 离线多音色（小包极速下载）
-        TtsVoiceOption(
-            id = "aishell:10",
-            engineVoiceName = "zh-CN-XiaochenNeural",
-            displayLabel = "艾雪（轻量离线版）",
-            styleTag = "知性清雅 · 30MB 极速离线包",
-            isNeural = true,
-            offlinePackId = SherpaOfflineTtsEngine.PACK_AISHELL3,
-            offlineSid = 10,
-            offlineSizeLabel = "30MB"
-        ),
-        TtsVoiceOption(
-            id = "aishell:25",
-            engineVoiceName = "zh-CN-YunfengNeural",
-            displayLabel = "晨宇（轻量离线版）",
-            styleTag = "温和青年 · 30MB 极速离线包",
-            isNeural = true,
-            offlinePackId = SherpaOfflineTtsEngine.PACK_AISHELL3,
-            offlineSid = 25,
-            offlineSizeLabel = "30MB"
-        ),
-        // 72MB Matcha 自然女声
+        // 独立可选离线扩展音色（一对一独立下载，不联动其他音色）
         TtsVoiceOption(
             id = "matcha:baker",
             engineVoiceName = "zh-CN-XiaohanNeural",
-            displayLabel = "小贝（自然旁白）",
-            styleTag = "温润流畅 · 72MB 独立离线包",
+            displayLabel = "小贝",
+            styleTag = "温润自然 · 广播级女声旁白",
             isNeural = true,
             offlinePackId = SherpaOfflineTtsEngine.PACK_MATCHA_BAKER,
             offlineSid = 0,
-            offlineSizeLabel = "72MB"
+            offlineSizeLabel = "72MB",
+            isBuiltinOffline = false
         )
     )
 

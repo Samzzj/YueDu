@@ -158,7 +158,7 @@ data class ReaderSettings(
 
 data class TtsSettings(
     val speechRate: Float = 1.0f,
-    val voiceId: String = "edge:zh-CN-XiaoxiaoNeural",
+    val voiceId: String = "edge:zh-CN-YunxiNeural",
     val sleepTimerMinutes: Int = 0, // 0 = off, -1 = end of chapter, >0 = minutes
     val autoFollow: Boolean = true,
     val highlightSentence: Boolean = true
@@ -172,7 +172,8 @@ data class TtsVoiceOption(
     val isNeural: Boolean,
     val offlinePackId: String? = null,
     val offlineSid: Int = 0,
-    val offlineSizeLabel: String = ""
+    val offlineSizeLabel: String = "",
+    val isBuiltinOffline: Boolean = false
 )
 
 data class TtsSentence(

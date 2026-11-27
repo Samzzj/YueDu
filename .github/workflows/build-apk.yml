@@ -39,6 +39,31 @@ jobs:
           curl -L --fail --retry 3 -o app/libs/sherpa-onnx-2.0.3.aar \
             https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.3/sherpa-onnx-2.0.3.aar
 
+      - name: Cache Built-in Yunxi Offline Voice Model
+        id: cache-kokoro
+        uses: actions/cache@v4
+        with:
+          path: app/src/main/assets/tts_models/kokoro-int8-multi-lang-v1_0
+          key: kokoro-int8-zh-assets-v1.0
+
+      - name: Prepare Built-in Yunxi Offline Voice Assets
+        if: steps.cache-kokoro.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p /tmp/kokoro_dl app/src/main/assets/tts_models/kokoro-int8-multi-lang-v1_0
+          curl -L --fail --retry 3 -o /tmp/kokoro_dl/kokoro.tar.bz2 \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_0.tar.bz2
+          tar -xjf /tmp/kokoro_dl/kokoro.tar.bz2 -C /tmp/kokoro_dl
+          cp /tmp/kokoro_dl/kokoro-int8-multi-lang-v1_0/model.int8.onnx \
+             /tmp/kokoro_dl/kokoro-int8-multi-lang-v1_0/voices.bin \
+             /tmp/kokoro_dl/kokoro-int8-multi-lang-v1_0/tokens.txt \
+             /tmp/kokoro_dl/kokoro-int8-multi-lang-v1_0/lexicon-zh.txt \
+             /tmp/kokoro_dl/kokoro-int8-multi-lang-v1_0/lexicon-us-en.txt \
+             /tmp/kokoro_dl/kokoro-int8-multi-lang-v1_0/date-zh.fst \
+             /tmp/kokoro_dl/kokoro-int8-multi-lang-v1_0/number-zh.fst \
+             /tmp/kokoro_dl/kokoro-int8-multi-lang-v1_0/phone-zh.fst \
+             app/src/main/assets/tts_models/kokoro-int8-multi-lang-v1_0/
+          rm -rf /tmp/kokoro_dl
+
       - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -49,29 +74,28 @@ jobs:
 
       - name: Rename and Verify APK
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk YueDu-v0.3.0-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk YueDu-v0.4.0-debug.apk
           APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n1)
-          "$APKSIGNER" verify --print-certs YueDu-v0.3.0-debug.apk
+          "$APKSIGNER" verify --print-certs YueDu-v0.4.0-debug.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: YueDu-v0.3.0-debug-apk
-          path: YueDu-v0.3.0-debug.apk
+          name: YueDu-v0.4.0-debug-apk
+          path: YueDu-v0.4.0-debug.apk
 
-      - name: Publish v0.3.0 Release
+      - name: Publish v0.4.0 Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.3.0-preview
-          name: 悦读 YueDu v0.3.0
+          tag_name: v0.4.0-preview
+          name: 悦读 YueDu v0.4.0
           body: |
-            悦读 YueDu v0.3.0 更新内容：
-            - 字体库直连国内镜像源，下载迅速稳定
-            - 新增离线 AI 语音包下载（基于 sherpa-onnx），下载后零延迟离线朗读
-            - AI 阅读页精简界面（去掉音调滑块），点击音色直接试听，右侧支持一键下载到本地
-            - 放大阅读页听书悬浮胶囊按钮，去掉阅读页顶部重复听书按钮
-            - 修复朗读播放过程中的异步并发闪退问题
-          files: YueDu-v0.3.0-debug.apk
+            悦读 YueDu v0.4.0 更新内容：
+            - 字体库直连 Google Fonts 中国大陆 CDN 与高速 jsDelivr 节点，下载提速至秒级
+            - 将「云希」拟真离线语音内置进安装包，断网或在线超时自动本地离线兜底
+            - 去除轻量离线版与系统本机音色，彻底修复点击单个音色下载导致全部音色同步下载的 Bug
+            - 全新重构 AI 阅读页面，采用 iOS 分组列表结构，布局简洁清爽
+          files: YueDu-v0.4.0-debug.apk
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -9,7 +9,6 @@ import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsKokoroModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsMatchaModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
-import com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig
 import com.yuedu.reader.data.CommercialFontsCatalog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -24,12 +23,12 @@ import java.io.FileOutputStream
 
 /**
  * Offline neural TTS engine powered by `k2-fsa/sherpa-onnx`.
- * Models are downloaded on-demand via Mainland China mirrors into app internal storage,
- * enabling zero-latency (<80ms) offline playback without network dependency.
+ * Supports both built-in APK asset models (Yunxi & Kokoro family as zero-delay local fallback)
+ * and individually downloadable optional packs.
  */
 class SherpaOfflineTtsEngine(private val context: Context) {
 
-    enum class PackKind { KOKORO, VITS, MATCHA }
+    enum class PackKind { MATCHA }
 
     data class OfflineModelPack(
         val id: String,
@@ -40,48 +39,38 @@ class SherpaOfflineTtsEngine(private val context: Context) {
     )
 
     companion object {
-        const val PACK_AISHELL3 = "aishell3"
+        const val BUILTIN_KOKORO_KEY = "__builtin_kokoro__"
+        const val BUILTIN_KOKORO_ASSET_DIR = "tts_models/kokoro-int8-multi-lang-v1_0"
+        const val YUNXI_BUILTIN_SID = 50
+
         const val PACK_MATCHA_BAKER = "matcha_baker"
-        const val PACK_KOKORO_V1_0 = "kokoro_v1_0"
 
         val modelPacks: Map<String, OfflineModelPack> = mapOf(
-            PACK_AISHELL3 to OfflineModelPack(
-                id = PACK_AISHELL3,
-                title = "AISHELL 轻量多音色包",
-                sizeLabel = "30 MB",
-                kind = PackKind.VITS,
-                downloadUrls = listOf(
-                    "https://gh-proxy.com/https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-icefall-zh-aishell3.tar.bz2",
-                    "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-icefall-zh-aishell3.tar.bz2"
-                )
-            ),
             PACK_MATCHA_BAKER to OfflineModelPack(
                 id = PACK_MATCHA_BAKER,
-                title = "标贝自然女声离线包",
-                sizeLabel = "72 MB",
+                title = "小贝自然旁白离线包",
+                sizeLabel = "72MB",
                 kind = PackKind.MATCHA,
                 downloadUrls = listOf(
                     "https://gh-proxy.com/https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/matcha-icefall-zh-baker.tar.bz2",
                     "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/matcha-icefall-zh-baker.tar.bz2"
-                )
-            ),
-            PACK_KOKORO_V1_0 to OfflineModelPack(
-                id = PACK_KOKORO_V1_0,
-                title = "Kokoro 拟真全系列离线包",
-                sizeLabel = "126 MB",
-                kind = PackKind.KOKORO,
-                downloadUrls = listOf(
-                    "https://gh-proxy.com/https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_0.tar.bz2",
-                    "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_0.tar.bz2"
                 )
             )
         )
     }
 
     private val modelsRoot = File(context.filesDir, "tts_models").apply { mkdirs() }
-    private var loadedPackId: String? = null
+    private var loadedKey: String? = null
     private var loadedTts: OfflineTts? = null
     private var currentAudioTrack: AudioTrack? = null
+
+    private val builtinAvailableCached: Boolean by lazy {
+        runCatching {
+            context.assets.list(BUILTIN_KOKORO_ASSET_DIR)?.contains("model.int8.onnx") == true
+        }.getOrDefault(false)
+    }
+
+    fun isBuiltinAvailable(): Boolean = builtinAvailableCached
 
     fun getDownloadedPackIds(): Set<String> {
         return modelPacks.keys.filter { isPackDownloaded(it) }.toSet()
@@ -115,7 +104,6 @@ class SherpaOfflineTtsEngine(private val context: Context) {
             extractTarBz2(archiveFile, targetDir)
             onProgress(0.96f)
 
-            // Verify model folder contains .onnx & tokens.txt
             val modelRoot = resolveModelSubDir(targetDir)
             val hasOnnx = modelRoot.listFiles()?.any { it.name.endsWith(".onnx") } == true
             if (!hasOnnx) {
@@ -169,13 +157,42 @@ class SherpaOfflineTtsEngine(private val context: Context) {
     }
 
     @Synchronized
-    private fun getOrCreateTts(packId: String): OfflineTts {
-        if (loadedPackId == packId && loadedTts != null) {
+    private fun getOrCreateBuiltinKokoro(): OfflineTts {
+        if (loadedKey == BUILTIN_KOKORO_KEY && loadedTts != null) {
             return loadedTts!!
         }
         runCatching { loadedTts?.free() }
         loadedTts = null
-        loadedPackId = null
+        loadedKey = null
+
+        val dir = BUILTIN_KOKORO_ASSET_DIR
+        val config = OfflineTtsConfig(
+            model = OfflineTtsModelConfig(
+                kokoro = OfflineTtsKokoroModelConfig(
+                    model = "$dir/model.int8.onnx",
+                    voices = "$dir/voices.bin",
+                    tokens = "$dir/tokens.txt",
+                    lexicon = "$dir/lexicon-us-en.txt,$dir/lexicon-zh.txt"
+                ),
+                numThreads = 4,
+                provider = "cpu"
+            ),
+            ruleFsts = "$dir/phone-zh.fst,$dir/date-zh.fst,$dir/number-zh.fst"
+        )
+        val created = OfflineTts(assetManager = context.assets, config = config)
+        loadedKey = BUILTIN_KOKORO_KEY
+        loadedTts = created
+        return created
+    }
+
+    @Synchronized
+    private fun getOrCreateDownloadedTts(packId: String): OfflineTts {
+        if (loadedKey == packId && loadedTts != null) {
+            return loadedTts!!
+        }
+        runCatching { loadedTts?.free() }
+        loadedTts = null
+        loadedKey = null
 
         val pack = modelPacks[packId] ?: throw IllegalArgumentException("未知模型")
         val dir = resolveModelSubDir(File(modelsRoot, packId))
@@ -188,26 +205,6 @@ class SherpaOfflineTtsEngine(private val context: Context) {
         val farPaths = files.filter { it.name.endsWith(".far") }.sortedBy { it.name }.joinToString(",") { it.absolutePath }
 
         val config = when (pack.kind) {
-            PackKind.KOKORO -> {
-                val modelPath = findFile { it.name.endsWith(".onnx") }
-                val voicesPath = findFile { it.name == "voices.bin" }
-                val lexicons = files.filter { it.name.startsWith("lexicon") && it.name.endsWith(".txt") }
-                    .joinToString(",") { it.absolutePath }
-                OfflineTtsConfig(
-                    model = OfflineTtsModelConfig(
-                        kokoro = OfflineTtsKokoroModelConfig(
-                            model = modelPath,
-                            voices = voicesPath,
-                            tokens = tokensPath,
-                            lexicon = lexicons
-                        ),
-                        numThreads = 4,
-                        provider = "cpu"
-                    ),
-                    ruleFsts = fstPaths,
-                    ruleFars = farPaths
-                )
-            }
             PackKind.MATCHA -> {
                 val acoustic = findFile { it.name.contains("model") && it.name.endsWith(".onnx") }
                 val vocoder = findFile { it.name.contains("vocos") && it.name.endsWith(".onnx") }
@@ -227,29 +224,24 @@ class SherpaOfflineTtsEngine(private val context: Context) {
                     ruleFars = farPaths
                 )
             }
-            PackKind.VITS -> {
-                val modelPath = findFile { it.name.endsWith(".onnx") }
-                val lex = findFile { it.name == "lexicon.txt" }
-                OfflineTtsConfig(
-                    model = OfflineTtsModelConfig(
-                        vits = OfflineTtsVitsModelConfig(
-                            model = modelPath,
-                            lexicon = lex,
-                            tokens = tokensPath
-                        ),
-                        numThreads = 2,
-                        provider = "cpu"
-                    ),
-                    ruleFsts = fstPaths,
-                    ruleFars = farPaths
-                )
-            }
         }
 
         val created = OfflineTts(assetManager = null, config = config)
-        loadedPackId = packId
+        loadedKey = packId
         loadedTts = created
         return created
+    }
+
+    suspend fun speakBuiltinBlocking(
+        sid: Int,
+        text: String,
+        speed: Float
+    ) = withContext(Dispatchers.IO) {
+        val tts = getOrCreateBuiltinKokoro()
+        currentCoroutineContext().ensureActive()
+        val audio = tts.generate(text = text, sid = sid, speed = speed.coerceIn(0.5f, 2.5f))
+        currentCoroutineContext().ensureActive()
+        playFloatPcmBlocking(audio.samples, audio.sampleRate)
     }
 
     suspend fun speakBlocking(
@@ -258,7 +250,7 @@ class SherpaOfflineTtsEngine(private val context: Context) {
         text: String,
         speed: Float
     ) = withContext(Dispatchers.IO) {
-        val tts = getOrCreateTts(packId)
+        val tts = getOrCreateDownloadedTts(packId)
         currentCoroutineContext().ensureActive()
         val audio = tts.generate(text = text, sid = sid, speed = speed.coerceIn(0.5f, 2.5f))
         currentCoroutineContext().ensureActive()
@@ -343,6 +335,6 @@ class SherpaOfflineTtsEngine(private val context: Context) {
         stopPlayback()
         runCatching { loadedTts?.free() }
         loadedTts = null
-        loadedPackId = null
+        loadedKey = null
     }
 }
