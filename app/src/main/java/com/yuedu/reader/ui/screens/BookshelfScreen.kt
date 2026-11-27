@@ -2,6 +2,7 @@ package com.yuedu.reader.ui.screens
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -209,7 +210,7 @@ fun BookshelfScreen(
                         modifier = Modifier
                             .size(18.dp)
                             .clip(CircleShape)
-                            .combinedClickable(onClick = { query = "" })
+                            .clickable { query = "" }
                     )
                 }
             }
@@ -421,6 +422,7 @@ private fun GridBookCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ListBookCard(
     book: BookItem,
