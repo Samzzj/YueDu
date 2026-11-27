@@ -7,11 +7,13 @@ import android.provider.OpenableColumns
 import com.yuedu.reader.engine.TxtBookEngine
 import com.yuedu.reader.model.AppAppearance
 import com.yuedu.reader.model.BookItem
+import com.yuedu.reader.model.BookmarkItem
 import com.yuedu.reader.model.ChapterInfo
 import com.yuedu.reader.model.CustomFont
 import com.yuedu.reader.model.ReaderSettings
 import com.yuedu.reader.model.ReaderTheme
 import com.yuedu.reader.model.ReadingMode
+import com.yuedu.reader.model.SearchHit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,6 +36,7 @@ class BookRepository(private val context: Context) {
 
     private val booksDir = File(context.filesDir, "books").apply { mkdirs() }
     private val chaptersDir = File(context.filesDir, "chapters").apply { mkdirs() }
+    private val bookmarksDir = File(context.filesDir, "bookmarks").apply { mkdirs() }
     private val fontsDir = File(context.filesDir, "fonts").apply { mkdirs() }
     private val booksMetaFile = File(context.filesDir, "books.json")
     private val fontsMetaFile = File(context.filesDir, "fonts.json")
@@ -248,6 +251,32 @@ class BookRepository(private val context: Context) {
             TxtBookEngine.readChapterParagraphs(File(book.filePath), chapter)
         }
 
+    suspend fun searchBook(book: BookItem, chapters: List<ChapterInfo>, query: String): List<SearchHit> =
+        withContext(Dispatchers.IO) {
+            TxtBookEngine.searchInBook(File(book.filePath), chapters, query)
+        }
+
+    suspend fun loadBookmarks(bookId: String): List<BookmarkItem> = withContext(Dispatchers.IO) {
+        ioMutex.withLock { readBookmarksLocked(bookId) }
+    }
+
+    suspend fun addBookmark(bookmark: BookmarkItem): List<BookmarkItem> = withContext(Dispatchers.IO) {
+        ioMutex.withLock {
+            val existing = readBookmarksLocked(bookmark.bookId)
+            val updated = (listOf(bookmark) + existing).sortedByDescending { it.createdAt }
+            writeBookmarksLocked(bookmark.bookId, updated)
+            updated
+        }
+    }
+
+    suspend fun removeBookmark(bookId: String, bookmarkId: String): List<BookmarkItem> = withContext(Dispatchers.IO) {
+        ioMutex.withLock {
+            val updated = readBookmarksLocked(bookId).filterNot { it.id == bookmarkId }
+            writeBookmarksLocked(bookId, updated)
+            updated
+        }
+    }
+
     suspend fun updateBookProgress(
         bookId: String,
         chapterIndex: Int,
@@ -287,6 +316,7 @@ class BookRepository(private val context: Context) {
         ioMutex.withLock {
             File(booksDir, "$bookId.txt").delete()
             File(chaptersDir, "$bookId.json").delete()
+            File(bookmarksDir, "$bookId.json").delete()
             val updated = _books.value.filterNot { it.id == bookId }
             _books.value = updated
             writeBooksLocked(updated)
@@ -441,6 +471,51 @@ class BookRepository(private val context: Context) {
         file.writeText(arr.toString(), StandardCharsets.UTF_8)
     }
 
+    private fun readBookmarksLocked(bookId: String): List<BookmarkItem> {
+        val file = File(bookmarksDir, "$bookId.json")
+        if (!file.exists()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(file.readText(StandardCharsets.UTF_8))
+            buildList(arr.length()) {
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    add(
+                        BookmarkItem(
+                            id = o.getString("id"),
+                            bookId = o.getString("bookId"),
+                            chapterIndex = o.getInt("chapterIndex"),
+                            chapterTitle = o.getString("chapterTitle"),
+                            charOffset = o.getInt("charOffset"),
+                            excerpt = o.getString("excerpt"),
+                            progress = o.optDouble("progress", 0.0).toFloat(),
+                            createdAt = o.optLong("createdAt", System.currentTimeMillis())
+                        )
+                    )
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun writeBookmarksLocked(bookId: String, items: List<BookmarkItem>) {
+        val file = File(bookmarksDir, "$bookId.json")
+        val arr = JSONArray()
+        for (b in items) {
+            arr.put(
+                JSONObject().apply {
+                    put("id", b.id)
+                    put("bookId", b.bookId)
+                    put("chapterIndex", b.chapterIndex)
+                    put("chapterTitle", b.chapterTitle)
+                    put("charOffset", b.charOffset)
+                    put("excerpt", b.excerpt)
+                    put("progress", b.progress.toDouble())
+                    put("createdAt", b.createdAt)
+                }
+            )
+        }
+        file.writeText(arr.toString(), StandardCharsets.UTF_8)
+    }
+
     private fun readCustomFontsLocked(): List<CustomFont> {
         if (!fontsMetaFile.exists()) return emptyList()
         return runCatching {
@@ -516,18 +591,12 @@ class BookRepository(private val context: Context) {
     private fun buildWelcomeGuideText(): String = """
         第一章 欢迎来到悦读
 
-        欢迎体验「悦读」！这是一款专为纯文本阅读打造的极简阅读器，融合了通透灵动的液态玻璃视觉与沉浸式纸书排版体验。
+        欢迎体验「悦读」！这是一款专为纯文本阅读打造的极简阅读器。
 
         核心功能一览：
-        1. 智能 TXT 排版：自动识别多种中文编码，告别乱码；自动识别中英文章节目录，大文件也能秒开。
-        2. 同 Wi-Fi 电脑传书与传字体：切换到底部「传书」标签，在电脑浏览器打开局域网地址，即可拖拽批量上传 TXT 小说与自定义字体。
-        3. 自定义字体导入：支持本地选择或电脑 Wi-Fi 传入 .ttf / .otf / .ttc 字体文件。
-
-        第二章 阅读手势与统一设置
-
-        在阅读界面中：
-        • 点击屏幕左侧 1/3 区域向上翻页，点击右侧 1/3 区域向下翻页。
-        • 点击屏幕中央区域唤出菜单，点击「设置」即可在一个完整面板内滑动调节字号、行距、段距，并切换仿真翻页、平滑翻页或上下翻页。
+        1. 无缝翻章阅读：支持仿真翻页、平滑翻页与上下连续翻页，读完一章直接向后翻即可无缝进入下一章。
+        2. 书签与全书搜索：阅读界面顶部支持一键添加书签与全书关键词搜索跳转。
+        3. 传书与自定义字体：底部「传书设置」页支持同 Wi-Fi 电脑批量上传书籍和字体，也可从手机本地直接导入字体。
 
         祝你阅读愉快！
     """.trimIndent()

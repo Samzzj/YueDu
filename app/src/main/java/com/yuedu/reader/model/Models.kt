@@ -26,6 +26,24 @@ data class ChapterInfo(
     val endByte: Long
 )
 
+data class BookmarkItem(
+    val id: String,
+    val bookId: String,
+    val chapterIndex: Int,
+    val chapterTitle: String,
+    val charOffset: Int,
+    val excerpt: String,
+    val progress: Float,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+data class SearchHit(
+    val chapterIndex: Int,
+    val chapterTitle: String,
+    val charOffset: Int,
+    val snippet: String
+)
+
 data class CustomFont(
     val id: String,
     val displayName: String,

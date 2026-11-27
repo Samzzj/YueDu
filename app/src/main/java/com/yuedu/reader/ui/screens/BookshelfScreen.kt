@@ -2,6 +2,7 @@ package com.yuedu.reader.ui.screens
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -10,6 +11,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -46,6 +49,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -169,9 +173,10 @@ fun BookshelfScreen(
         LiquidGlassSurface(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(46.dp),
-            cornerRadius = 23.dp,
-            elevation = 8.dp
+                .height(44.dp),
+            cornerRadius = 22.dp,
+            strong = true,
+            elevation = 6.dp
         ) {
             Row(
                 modifier = Modifier
@@ -217,7 +222,7 @@ fun BookshelfScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(18.dp))
 
         if (filtered.isEmpty()) {
             Box(
@@ -228,7 +233,8 @@ fun BookshelfScreen(
             ) {
                 LiquidGlassSurface(
                     modifier = Modifier.fillMaxWidth(),
-                    cornerRadius = 28.dp
+                    cornerRadius = 24.dp,
+                    strong = true
                 ) {
                     Column(
                         modifier = Modifier.padding(28.dp),
@@ -249,7 +255,7 @@ fun BookshelfScreen(
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "点击右上角「导入」选择本机 TXT，或使用 Wi-Fi 从电脑批量传书",
+                            text = "点击右上角「导入」选择本机 TXT，或去「传书设置」从电脑批量传书",
                             color = glass.textSecondary,
                             fontSize = 13.sp
                         )
@@ -258,15 +264,15 @@ fun BookshelfScreen(
             }
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Fixed(if (isGridMode) 2 else 1),
+                columns = GridCells.Fixed(if (isGridMode) 3 else 1),
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-                contentPadding = PaddingValues(bottom = 120.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp),
+                contentPadding = PaddingValues(bottom = 116.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
                 items(filtered, key = { it.id }) { book ->
                     if (isGridMode) {
-                        GridBookCard(
+                        PortraitBookItem(
                             book = book,
                             onClick = { onOpenBook(book) },
                             onLongClick = {
@@ -333,9 +339,12 @@ fun BookshelfScreen(
     }
 }
 
+/**
+ * Classic 3-column vertical portrait book cover (aspect ratio 0.68f ~ 2:3) with spine crease.
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun GridBookCard(
+private fun PortraitBookItem(
     book: BookItem,
     onClick: () -> Unit,
     onLongClick: () -> Unit
@@ -343,107 +352,92 @@ private fun GridBookCard(
     val glass = LocalLiquidGlass.current
     val (c1, c2) = BookCoverPalettes[book.coverPaletteIndex % BookCoverPalettes.size]
 
-    LiquidGlassSurface(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(24.dp))
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
-        cornerRadius = 24.dp,
-        elevation = 10.dp
+            .clip(RoundedCornerShape(10.dp))
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(0.68f)
+                .shadow(
+                    elevation = 8.dp,
+                    shape = RoundedCornerShape(10.dp),
+                    ambientColor = Color.Black.copy(alpha = 0.22f),
+                    spotColor = Color.Black.copy(alpha = 0.22f)
+                )
+                .clip(RoundedCornerShape(10.dp))
+                .background(Brush.verticalGradient(listOf(c1, c2)))
+                .border(0.6.dp, Color.White.copy(alpha = 0.28f), RoundedCornerShape(10.dp))
+        ) {
+            // Subtle book spine crease on left edge
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(148.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Brush.linearGradient(listOf(c1, c2)))
-            ) {
-                Box(
-                    modifier = Modifier
-                        .width(12.dp)
-                        .fillMaxSize()
-                        .background(
-                            Brush.horizontalGradient(
-                                listOf(Color.White.copy(alpha = 0.25f), Color.Transparent)
+                    .width(9.dp)
+                    .fillMaxHeight()
+                    .background(
+                        Brush.horizontalGradient(
+                            listOf(
+                                Color.Black.copy(alpha = 0.16f),
+                                Color.White.copy(alpha = 0.18f),
+                                Color.Transparent
                             )
                         )
-                )
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(14.dp),
-                    verticalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .background(Color.White.copy(alpha = 0.22f))
-                            .padding(horizontal = 8.dp, vertical = 3.dp)
-                    ) {
-                        Text(
-                            text = "TXT",
-                            color = Color.White,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-
-                    Text(
-                        text = book.title,
-                        color = Color.White,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
-                        lineHeight = 21.sp
                     )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            Text(
-                text = book.title,
-                color = glass.textPrimary,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
             )
 
-            Spacer(modifier = Modifier.height(4.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(start = 12.dp, end = 9.dp, top = 10.dp, bottom = 10.dp),
+                verticalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "${book.chapterCount} 章 · ${formatBytes(book.fileSize)}",
-                    color = glass.textSecondary,
-                    fontSize = 11.sp
+                    text = "TXT",
+                    color = Color.White.copy(alpha = 0.78f),
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 0.6.sp
                 )
+
                 Text(
-                    text = if (book.lastReadAt == 0L) "未读" else "${(book.progress * 100).toInt()}%",
-                    color = glass.accent,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold
+                    text = book.title,
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                    lineHeight = 17.sp
+                )
+
+                Text(
+                    text = if (book.lastReadAt == 0L) "未读" else String.format(Locale.US, "%.1f%%", book.progress * 100f),
+                    color = Color.White.copy(alpha = 0.86f),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Medium
                 )
             }
-
-            Spacer(modifier = Modifier.height(6.dp))
-
-            LinearProgressIndicator(
-                progress = { book.progress.coerceIn(0f, 1f) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(4.dp)
-                    .clip(CircleShape),
-                color = glass.accent,
-                trackColor = glass.textSecondary.copy(alpha = 0.16f)
-            )
         }
+
+        Spacer(modifier = Modifier.height(7.dp))
+
+        Text(
+            text = book.title,
+            color = glass.textPrimary,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+
+        Text(
+            text = if (book.lastReadAt == 0L) "${book.chapterCount} 章" else "已读 ${String.format(Locale.US, "%.1f%%", book.progress * 100f)}",
+            color = glass.textSecondary,
+            fontSize = 11.sp,
+            maxLines = 1
+        )
     }
 }
 
@@ -460,10 +454,11 @@ private fun ListBookCard(
     LiquidGlassSurface(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(22.dp))
+            .clip(RoundedCornerShape(18.dp))
             .combinedClickable(onClick = onClick, onLongClick = onDeleteClick),
-        cornerRadius = 22.dp,
-        elevation = 8.dp
+        cornerRadius = 18.dp,
+        strong = true,
+        elevation = 6.dp
     ) {
         Row(
             modifier = Modifier
@@ -473,17 +468,17 @@ private fun ListBookCard(
         ) {
             Box(
                 modifier = Modifier
-                    .width(56.dp)
-                    .height(76.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(Brush.linearGradient(listOf(c1, c2)))
+                    .width(54.dp)
+                    .height(78.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Brush.verticalGradient(listOf(c1, c2)))
                     .padding(6.dp),
                 contentAlignment = Alignment.BottomStart
             ) {
                 Text(
                     text = "TXT",
                     color = Color.White.copy(alpha = 0.9f),
-                    fontSize = 10.sp,
+                    fontSize = 9.sp,
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -518,7 +513,7 @@ private fun ListBookCard(
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
-                        text = if (book.lastReadAt == 0L) "未读" else "${(book.progress * 100).toInt()}%",
+                        text = if (book.lastReadAt == 0L) "未读" else String.format(Locale.US, "%.1f%%", book.progress * 100f),
                         color = glass.accent,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold

@@ -5,7 +5,6 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -37,7 +36,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
@@ -49,6 +47,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.yuedu.reader.ui.theme.LocalLiquidGlass
 
+/**
+ * Solid flat background (no gradient mesh) for clean bookshelf & home presentation.
+ */
 @Composable
 fun AmbientGlassBackground(
     modifier: Modifier = Modifier,
@@ -58,39 +59,9 @@ fun AmbientGlassBackground(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(glass.baseBackground)
-    ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(glass.orbPrimary, Color.Transparent),
-                    center = Offset(size.width * 0.16f, size.height * 0.14f),
-                    radius = size.width * 0.68f
-                ),
-                radius = size.width * 0.68f,
-                center = Offset(size.width * 0.16f, size.height * 0.14f)
-            )
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(glass.orbSecondary, Color.Transparent),
-                    center = Offset(size.width * 0.88f, size.height * 0.22f),
-                    radius = size.width * 0.65f
-                ),
-                radius = size.width * 0.65f,
-                center = Offset(size.width * 0.88f, size.height * 0.22f)
-            )
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(glass.orbTertiary, Color.Transparent),
-                    center = Offset(size.width * 0.55f, size.height * 0.82f),
-                    radius = size.width * 0.72f
-                ),
-                radius = size.width * 0.72f,
-                center = Offset(size.width * 0.55f, size.height * 0.82f)
-            )
-        }
-        content()
-    }
+            .background(glass.baseBackground),
+        content = content
+    )
 }
 
 @Composable
@@ -110,26 +81,11 @@ fun LiquidGlassSurface(
             .shadow(
                 elevation = elevation,
                 shape = shape,
-                ambientColor = Color.Black.copy(alpha = if (glass.isDark) 0.45f else 0.12f),
-                spotColor = Color.Black.copy(alpha = if (glass.isDark) 0.45f else 0.12f)
+                ambientColor = Color.Black.copy(alpha = if (glass.isDark) 0.45f else 0.10f),
+                spotColor = Color.Black.copy(alpha = if (glass.isDark) 0.45f else 0.10f)
             )
             .clip(shape)
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        fill,
-                        fill.copy(alpha = (fill.alpha * 0.90f).coerceIn(0f, 1f))
-                    )
-                )
-            )
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        glass.glassHighlightTop.copy(alpha = if (glass.isDark) 0.14f else 0.35f),
-                        Color.Transparent
-                    )
-                )
-            )
+            .background(fill)
             .border(
                 width = 0.9.dp,
                 brush = Brush.verticalGradient(
@@ -200,10 +156,10 @@ fun LiquidGlassFloatingTabBar(
     LiquidGlassSurface(
         modifier = modifier
             .fillMaxWidth()
-            .height(68.dp),
-        cornerRadius = 34.dp,
+            .height(64.dp),
+        cornerRadius = 32.dp,
         strong = true,
-        elevation = 20.dp
+        elevation = 18.dp
     ) {
         BoxWithConstraints(
             modifier = Modifier
@@ -220,24 +176,16 @@ fun LiquidGlassFloatingTabBar(
                 label = "tabOffset"
             )
 
-            // Floating inner liquid capsule indicator
             Box(
                 modifier = Modifier
                     .offset(x = indicatorOffset)
                     .width(tabWidth)
                     .fillMaxHeight()
                     .clip(CircleShape)
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                glass.pillIndicator,
-                                glass.pillIndicator.copy(alpha = glass.pillIndicator.alpha * 0.72f)
-                            )
-                        )
-                    )
+                    .background(glass.accentSoft)
                     .border(
                         width = 0.7.dp,
-                        color = glass.glassBorderTop.copy(alpha = 0.7f),
+                        color = glass.accent.copy(alpha = 0.25f),
                         shape = CircleShape
                     )
             )
@@ -250,7 +198,7 @@ fun LiquidGlassFloatingTabBar(
                         label = "tabTint"
                     )
                     val interaction = remember { MutableInteractionSource() }
-                    Column(
+                    Row(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxHeight()
@@ -259,20 +207,20 @@ fun LiquidGlassFloatingTabBar(
                                 interactionSource = interaction,
                                 indication = null
                             ) { onSelect(idx) },
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
                             imageVector = item.icon,
                             contentDescription = item.label,
                             tint = tint,
-                            modifier = Modifier.size(22.dp)
+                            modifier = Modifier.size(20.dp)
                         )
-                        Spacer(modifier = Modifier.height(2.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = item.label,
                             color = tint,
-                            fontSize = 11.sp,
+                            fontSize = 14.sp,
                             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
                         )
                     }

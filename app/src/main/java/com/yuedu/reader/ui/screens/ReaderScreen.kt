@@ -5,6 +5,7 @@ import android.graphics.Typeface
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
@@ -47,16 +48,23 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerDefaults
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.FormatListBulleted
+import androidx.compose.material.icons.rounded.Bookmark
+import androidx.compose.material.icons.rounded.BookmarkBorder
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DarkMode
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.LightMode
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material3.CircularProgressIndicator
@@ -70,9 +78,10 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -86,12 +95,15 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -103,17 +115,50 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.yuedu.reader.engine.TxtBookEngine
 import com.yuedu.reader.model.BookItem
+import com.yuedu.reader.model.BookmarkItem
 import com.yuedu.reader.model.ChapterInfo
 import com.yuedu.reader.model.CustomFont
 import com.yuedu.reader.model.ReaderPage
 import com.yuedu.reader.model.ReaderSettings
 import com.yuedu.reader.model.ReaderTheme
 import com.yuedu.reader.model.ReadingMode
+import com.yuedu.reader.model.SearchHit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import java.util.UUID
 import kotlin.math.abs
+
+private data class VirtualSmoothPage(
+    val chapterIdx: Int,
+    val pageIdxInChapter: Int,
+    val page: ReaderPage
+)
+
+private sealed interface VerticalItem {
+    val key: String
+    val chapterIndex: Int
+
+    data class ChapterHeader(
+        override val chapterIndex: Int,
+        val title: String
+    ) : VerticalItem {
+        override val key: String = "ch_${chapterIndex}_hdr"
+    }
+
+    data class Paragraph(
+        override val chapterIndex: Int,
+        val paraIndex: Int,
+        val text: String,
+        val isTitle: Boolean,
+        val charOffset: Int
+    ) : VerticalItem {
+        override val key: String = "ch_${chapterIndex}_p_${paraIndex}"
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -124,6 +169,10 @@ fun ReaderScreen(
     resolveTypeface: (String) -> Typeface,
     loadChapters: suspend (String) -> List<ChapterInfo>,
     loadChapterParagraphs: suspend (BookItem, ChapterInfo) -> List<TxtBookEngine.ChapterParagraph>,
+    loadBookmarks: suspend (String) -> List<BookmarkItem>,
+    onAddBookmark: suspend (BookmarkItem) -> List<BookmarkItem>,
+    onRemoveBookmark: suspend (String, String) -> List<BookmarkItem>,
+    onSearchBook: suspend (BookItem, List<ChapterInfo>, String) -> List<SearchHit>,
     onSaveProgress: (bookId: String, chapterIdx: Int, charOffset: Int, progress: Float) -> Unit,
     onUpdateSettings: ((ReaderSettings) -> ReaderSettings) -> Unit,
     onGoImportFonts: () -> Unit,
@@ -138,25 +187,35 @@ fun ReaderScreen(
     var targetCharOffset by remember(book.id) { mutableIntStateOf(book.currentCharOffset.coerceAtLeast(0)) }
     var chapterParagraphs by remember(book.id) { mutableStateOf<List<TxtBookEngine.ChapterParagraph>>(emptyList()) }
     var pages by remember(book.id) { mutableStateOf<List<ReaderPage>>(emptyList()) }
+    var prevChapterLastPage by remember(book.id) { mutableStateOf<ReaderPage?>(null) }
+    var nextChapterFirstPage by remember(book.id) { mutableStateOf<ReaderPage?>(null) }
     var currentPageIndex by remember(book.id) { mutableIntStateOf(0) }
     var isLoading by remember(book.id) { mutableStateOf(true) }
     var jumpToLastPageOnChapterLoad by remember { mutableStateOf(false) }
+    var jumpNonce by remember(book.id) { mutableIntStateOf(0) }
 
+    var bookmarks by remember(book.id) { mutableStateOf<List<BookmarkItem>>(emptyList()) }
     var showControls by remember { mutableStateOf(false) }
-    var showChapterSheet by remember { mutableStateOf(false) }
+    var showDirectorySheet by remember { mutableStateOf(false) }
+    var directoryInitialTab by remember { mutableIntStateOf(0) } // 0 = 目录, 1 = 书签
     var showSettingsSheet by remember { mutableStateOf(false) }
+    var showSearchSheet by remember { mutableStateOf(false) }
     var reverseChapters by remember { mutableStateOf(false) }
+
+    var searchQuery by remember(book.id) { mutableStateOf("") }
+    var searchResults by remember(book.id) { mutableStateOf<List<SearchHit>>(emptyList()) }
+    var isSearching by remember { mutableStateOf(false) }
 
     BackHandler {
         when {
+            showSearchSheet -> showSearchSheet = false
             showSettingsSheet -> showSettingsSheet = false
-            showChapterSheet -> showChapterSheet = false
+            showDirectorySheet -> showDirectorySheet = false
             showControls -> showControls = false
             else -> onExit()
         }
     }
 
-    // Immersive system bars control
     DisposableEffect(showControls, settings.theme) {
         val activity = context as? Activity
         val window = activity?.window
@@ -179,17 +238,16 @@ fun ReaderScreen(
         }
     }
 
-    // Load chapter list once
     LaunchedEffect(book.id) {
         isLoading = true
         val loaded = loadChapters(book.id)
         chapters = loaded
+        bookmarks = loadBookmarks(book.id)
         if (chapterIndex >= loaded.size && loaded.isNotEmpty()) {
             chapterIndex = loaded.lastIndex
         }
     }
 
-    // Load chapter paragraphs when chapterIndex changes
     LaunchedEffect(chapters, chapterIndex) {
         if (chapters.isEmpty()) return@LaunchedEffect
         isLoading = true
@@ -202,17 +260,37 @@ fun ReaderScreen(
         resolveTypeface(settings.selectedFontId)
     }
 
-    // Safe top/bottom insets ignoring status bar visibility so punch-hole/Dynamic Island NEVER clips text
     val topSafeInsets = WindowInsets.statusBarsIgnoringVisibility.union(WindowInsets.displayCutout)
     val bottomSafeInsets = WindowInsets.navigationBarsIgnoringVisibility
     val topSafeDp: Dp = maxOf(topSafeInsets.asPaddingValues().calculateTopPadding(), 32.dp) + 6.dp
     val bottomSafeDp: Dp = maxOf(bottomSafeInsets.asPaddingValues().calculateBottomPadding(), 12.dp)
 
-    // Solid opaque panel colors for Settings & Directory
     val solidSheetBg = if (settings.theme.isDark) Color(0xFF1A1C22) else Color(0xFFFFFFFF)
     val solidSheetCard = if (settings.theme.isDark) Color(0xFF252830) else Color(0xFFF2F2F7)
     val solidGlassBarBg = if (settings.theme.isDark) Color(0xE8181A20) else Color(0xEAF8F9FC)
     val solidGlassBorder = if (settings.theme.isDark) Color(0x36FFFFFF) else Color(0xCCFFFFFF)
+
+    fun computeProgress(chIdx: Int, pageIdx: Int, totalPagesInCh: Int): Float {
+        val ch = chapters.getOrNull(chIdx) ?: return 0f
+        val totalBytes = book.totalBytes.coerceAtLeast(1L).toFloat()
+        val chBytes = (ch.endByte - ch.startByte).coerceAtLeast(1L).toFloat()
+        val ratio = (pageIdx + 1f) / totalPagesInCh.coerceAtLeast(1)
+        return ((ch.startByte + chBytes * ratio) / totalBytes).coerceIn(0f, 1f)
+    }
+
+    val currentBookProgress = remember(chapters, chapterIndex, currentPageIndex, pages.size) {
+        computeProgress(chapterIndex, currentPageIndex, pages.size)
+    }
+
+    val activeBookmark = remember(bookmarks, chapterIndex, pages, currentPageIndex) {
+        val page = pages.getOrNull(currentPageIndex)
+        if (page == null) null
+        else bookmarks.find {
+            it.chapterIndex == chapterIndex &&
+                it.charOffset >= page.startOffset &&
+                it.charOffset <= page.endOffset
+        }
+    }
 
     BoxWithConstraints(
         modifier = Modifier
@@ -230,9 +308,11 @@ fun ReaderScreen(
         val textSizePx = with(density) { settings.fontSizeSp.sp.toPx() }
         val paragraphSpacingPx = with(density) { settings.paragraphSpacingDp.dp.toPx() }
 
-        // Repaginate accurately when typography or chapter changes
+        // Paginate current chapter + adjacent prev/next boundary pages for seamless turning
         LaunchedEffect(
             chapterParagraphs,
+            chapterIndex,
+            jumpNonce,
             contentWidthPx,
             contentHeightPx,
             textSizePx,
@@ -262,16 +342,44 @@ fun ReaderScreen(
                 }
                 if (idx >= 0) idx else 0
             }
+
+            // Preload adjacent boundary pages in background
+            prevChapterLastPage = if (chapterIndex > 0 && chapters.isNotEmpty()) {
+                withContext(Dispatchers.Default) {
+                    val prevParas = loadChapterParagraphs(book, chapters[chapterIndex - 1])
+                    TxtBookEngine.paginateParagraphs(
+                        paragraphs = prevParas,
+                        widthPx = contentWidthPx,
+                        heightPx = contentHeightPx,
+                        textSizePx = textSizePx,
+                        lineHeightMultiplier = settings.lineHeightMultiplier,
+                        paragraphSpacingPx = paragraphSpacingPx,
+                        typeface = activeTypeface
+                    ).lastOrNull()
+                }
+            } else null
+
+            nextChapterFirstPage = if (chapterIndex < chapters.lastIndex) {
+                withContext(Dispatchers.Default) {
+                    val nextParas = loadChapterParagraphs(book, chapters[chapterIndex + 1])
+                    TxtBookEngine.paginateParagraphs(
+                        paragraphs = nextParas,
+                        widthPx = contentWidthPx,
+                        heightPx = contentHeightPx,
+                        textSizePx = textSizePx,
+                        lineHeightMultiplier = settings.lineHeightMultiplier,
+                        paragraphSpacingPx = paragraphSpacingPx,
+                        typeface = activeTypeface
+                    ).firstOrNull()
+                }
+            } else null
         }
 
-        // Persist progress whenever currentPageIndex or chapterIndex changes
+        // Persist progress
         LaunchedEffect(currentPageIndex, chapterIndex, pages) {
             val page = pages.getOrNull(currentPageIndex) ?: return@LaunchedEffect
             targetCharOffset = page.startOffset
-            val total = chapters.size.coerceAtLeast(1)
-            val chapterSpan = 1f / total
-            val inChapter = (currentPageIndex + 1f) / pages.size.coerceAtLeast(1)
-            val progress = (chapterIndex * chapterSpan) + (inChapter * chapterSpan)
+            val progress = computeProgress(chapterIndex, currentPageIndex, pages.size)
             onSaveProgress(book.id, chapterIndex, page.startOffset, progress)
         }
 
@@ -300,27 +408,47 @@ fun ReaderScreen(
 
             when (settings.readingMode) {
                 ReadingMode.SMOOTH -> {
+                    val virtualPages = remember(pages, prevChapterLastPage, nextChapterFirstPage, chapterIndex) {
+                        buildList {
+                            prevChapterLastPage?.let { add(VirtualSmoothPage(chapterIndex - 1, it.pageIndex, it)) }
+                            pages.forEach { add(VirtualSmoothPage(chapterIndex, it.pageIndex, it)) }
+                            nextChapterFirstPage?.let { add(VirtualSmoothPage(chapterIndex + 1, 0, it)) }
+                        }
+                    }
+                    val prevOffsetCount = if (prevChapterLastPage != null) 1 else 0
                     val pagerState = rememberPagerState(
-                        initialPage = currentPageIndex.coerceIn(0, pages.lastIndex),
-                        pageCount = { pages.size }
+                        initialPage = (prevOffsetCount + currentPageIndex).coerceIn(0, virtualPages.lastIndex),
+                        pageCount = { virtualPages.size }
                     )
 
-                    LaunchedEffect(pages, currentPageIndex) {
-                        val safe = currentPageIndex.coerceIn(0, pages.lastIndex)
-                        if (pagerState.currentPage != safe) {
-                            pagerState.scrollToPage(safe)
+                    LaunchedEffect(virtualPages, currentPageIndex) {
+                        val target = (prevOffsetCount + currentPageIndex).coerceIn(0, virtualPages.lastIndex)
+                        if (!pagerState.isScrollInProgress && pagerState.currentPage != target) {
+                            pagerState.scrollToPage(target)
                         }
                     }
 
-                    LaunchedEffect(pagerState.currentPage) {
-                        currentPageIndex = pagerState.currentPage
+                    LaunchedEffect(pagerState.settledPage, pagerState.isScrollInProgress) {
+                        if (pagerState.isScrollInProgress) return@LaunchedEffect
+                        val vp = virtualPages.getOrNull(pagerState.settledPage) ?: return@LaunchedEffect
+                        if (vp.chapterIdx < chapterIndex) {
+                            goPrevChapterLastPage()
+                        } else if (vp.chapterIdx > chapterIndex) {
+                            goNextChapterFirstPage()
+                        } else {
+                            currentPageIndex = vp.pageIdxInChapter
+                        }
                     }
 
                     HorizontalPager(
                         state = pagerState,
+                        flingBehavior = PagerDefaults.flingBehavior(
+                            state = pagerState,
+                            snapPositionalThreshold = 0.14f
+                        ),
                         modifier = Modifier
                             .fillMaxSize()
-                            .pointerInput(pages.size, chapterIndex, showControls) {
+                            .pointerInput(virtualPages.size, pagerState.currentPage, showControls) {
                                 detectTapGestures { offset ->
                                     val w = size.width.toFloat()
                                     when {
@@ -328,28 +456,27 @@ fun ReaderScreen(
                                         offset.x < w * 0.30f -> {
                                             if (pagerState.currentPage > 0) {
                                                 scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
-                                            } else {
-                                                goPrevChapterLastPage()
                                             }
                                         }
                                         offset.x > w * 0.70f -> {
-                                            if (pagerState.currentPage < pages.lastIndex) {
+                                            if (pagerState.currentPage < virtualPages.lastIndex) {
                                                 scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
-                                            } else {
-                                                goNextChapterFirstPage()
                                             }
                                         }
                                         else -> showControls = true
                                     }
                                 }
                             }
-                    ) { pageIdx ->
+                    ) { vIdx ->
+                        val vp = virtualPages[vIdx]
+                        val chTitle = chapters.getOrNull(vp.chapterIdx)?.title ?: book.title
+                        val totalInCh = if (vp.chapterIdx == chapterIndex) pages.size else (vp.page.pageIndex + 1).coerceAtLeast(1)
+                        val progress = computeProgress(vp.chapterIdx, vp.pageIdxInChapter, totalInCh)
                         ReaderPageFrame(
-                            page = pages[pageIdx],
-                            pageNumber = pageIdx + 1,
-                            totalPages = pages.size,
+                            page = vp.page,
                             bookTitle = book.title,
-                            chapterTitle = currentChapterTitle,
+                            chapterTitle = chTitle,
+                            progressPercent = progress,
                             topSafeDp = topSafeDp,
                             bottomSafeDp = bottomSafeDp,
                             horizontalPaddingDp = settings.horizontalPaddingDp,
@@ -366,8 +493,8 @@ fun ReaderScreen(
                     SimulationCurlPager(
                         pages = pages,
                         currentPageIndex = currentPageIndex.coerceIn(0, pages.lastIndex),
-                        hasPrevChapter = chapterIndex > 0,
-                        hasNextChapter = chapterIndex < chapters.lastIndex,
+                        prevChapterLastPage = prevChapterLastPage,
+                        nextChapterFirstPage = nextChapterFirstPage,
                         onPageChanged = { currentPageIndex = it },
                         onRequestPrevChapter = { goPrevChapterLastPage() },
                         onRequestNextChapter = { goNextChapterFirstPage() },
@@ -379,13 +506,20 @@ fun ReaderScreen(
                             } else false
                         },
                         theme = settings.theme
-                    ) { pageIdx ->
+                    ) { pageObj, chOffset ->
+                        val targetChIdx = (chapterIndex + chOffset).coerceIn(0, chapters.lastIndex.coerceAtLeast(0))
+                        val chTitle = chapters.getOrNull(targetChIdx)?.title ?: book.title
+                        val totalInCh = when (chOffset) {
+                            0 -> pages.size
+                            -1 -> (pageObj.pageIndex + 1).coerceAtLeast(1)
+                            else -> 1
+                        }
+                        val progress = computeProgress(targetChIdx, pageObj.pageIndex, totalInCh)
                         ReaderPageFrame(
-                            page = pages[pageIdx],
-                            pageNumber = pageIdx + 1,
-                            totalPages = pages.size,
+                            page = pageObj,
                             bookTitle = book.title,
-                            chapterTitle = currentChapterTitle,
+                            chapterTitle = chTitle,
+                            progressPercent = progress,
                             topSafeDp = topSafeDp,
                             bottomSafeDp = bottomSafeDp,
                             horizontalPaddingDp = settings.horizontalPaddingDp,
@@ -399,78 +533,160 @@ fun ReaderScreen(
                 }
 
                 ReadingMode.VERTICAL -> {
-                    val scrollState = rememberScrollState()
-                    LaunchedEffect(chapterIndex) {
-                        scrollState.scrollTo(0)
+                    val verticalItems = remember { mutableStateListOf<VerticalItem>() }
+                    var maxLoadedChapter by remember(book.id, chapterIndex) { mutableIntStateOf(chapterIndex) }
+                    var isAppending by remember { mutableStateOf(false) }
+                    val listState = rememberLazyListState()
+
+                    var lastHandledJumpNonce by remember(book.id) { mutableIntStateOf(-1) }
+                    LaunchedEffect(chapterParagraphs, chapterIndex, jumpNonce) {
+                        if (chapters.isEmpty() || chapterParagraphs.isEmpty()) return@LaunchedEffect
+                        val alreadyHasChapter = verticalItems.any { it.chapterIndex == chapterIndex }
+                        val forceJump = jumpNonce != lastHandledJumpNonce
+                        if (!alreadyHasChapter || forceJump) {
+                            lastHandledJumpNonce = jumpNonce
+                            verticalItems.clear()
+                            maxLoadedChapter = chapterIndex
+                            chapterParagraphs.forEachIndexed { idx, p ->
+                                verticalItems.add(
+                                    VerticalItem.Paragraph(chapterIndex, idx, p.text, p.isTitle, p.charStartOffset)
+                                )
+                            }
+                            val targetParaIdx = chapterParagraphs.indexOfFirst { it.charStartOffset >= targetCharOffset }.coerceAtLeast(0)
+                            listState.scrollToItem(targetParaIdx)
+                        }
                     }
 
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(top = topSafeDp, bottom = bottomSafeDp)
-                            .verticalScroll(scrollState)
-                            .pointerInput(Unit) {
-                                detectTapGestures { showControls = !showControls }
-                            }
-                            .padding(horizontal = settings.horizontalPaddingDp.dp, vertical = 12.dp)
-                    ) {
-                        val activeFontFamily = remember(activeTypeface) { FontFamily(activeTypeface) }
-                        chapterParagraphs.forEach { para ->
-                            Text(
-                                text = para.text,
-                                color = settings.theme.textColor,
-                                fontSize = if (para.isTitle) (settings.fontSizeSp * 1.16f).sp else settings.fontSizeSp.sp,
-                                fontWeight = if (para.isTitle) FontWeight.Bold else FontWeight.Normal,
-                                lineHeight = ((if (para.isTitle) settings.fontSizeSp * 1.16f else settings.fontSizeSp) * settings.lineHeightMultiplier).sp,
-                                fontFamily = activeFontFamily
-                            )
-                            Spacer(
-                                modifier = Modifier.height(
-                                    if (para.isTitle) maxOf(settings.paragraphSpacingDp, 14f).dp
-                                    else settings.paragraphSpacingDp.dp
+                    // Auto-append next chapter seamlessly as user scrolls near bottom
+                    val lastVisible by remember {
+                        derivedStateOf { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
+                    }
+                    LaunchedEffect(lastVisible, verticalItems.size, maxLoadedChapter) {
+                        if (!isAppending &&
+                            verticalItems.isNotEmpty() &&
+                            lastVisible >= verticalItems.size - 6 &&
+                            maxLoadedChapter < chapters.lastIndex
+                        ) {
+                            isAppending = true
+                            val nextIdx = maxLoadedChapter + 1
+                            val nextParas = loadChapterParagraphs(book, chapters[nextIdx])
+                            nextParas.forEachIndexed { idx, p ->
+                                verticalItems.add(
+                                    VerticalItem.Paragraph(nextIdx, idx, p.text, p.isTitle, p.charStartOffset)
                                 )
+                            }
+                            maxLoadedChapter = nextIdx
+                            isAppending = false
+                        }
+                    }
+
+                    // Track visible chapter & progress in vertical scroll
+                    val firstVisible by remember {
+                        derivedStateOf { listState.firstVisibleItemIndex }
+                    }
+                    LaunchedEffect(firstVisible, verticalItems.size) {
+                        val item = verticalItems.getOrNull(firstVisible) as? VerticalItem.Paragraph ?: return@LaunchedEffect
+                        if (item.chapterIndex != chapterIndex) {
+                            chapterIndex = item.chapterIndex
+                        }
+                        targetCharOffset = item.charOffset
+                        val ch = chapters.getOrNull(item.chapterIndex) ?: return@LaunchedEffect
+                        val totalBytes = book.totalBytes.coerceAtLeast(1L).toFloat()
+                        val chBytes = (ch.endByte - ch.startByte).coerceAtLeast(1L).toFloat()
+                        val chItems = verticalItems.count { it.chapterIndex == item.chapterIndex }.coerceAtLeast(1)
+                        val ratio = (item.paraIndex + 1f) / chItems
+                        val prog = ((ch.startByte + chBytes * ratio) / totalBytes).coerceIn(0f, 1f)
+                        onSaveProgress(book.id, item.chapterIndex, item.charOffset, prog)
+                    }
+
+                    val activeFontFamily = remember(activeTypeface) { FontFamily(activeTypeface) }
+
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        LazyColumn(
+                            state = listState,
+                            contentPadding = PaddingValues(
+                                top = topSafeDp + 28.dp,
+                                bottom = bottomSafeDp + 36.dp,
+                                start = settings.horizontalPaddingDp.dp,
+                                end = settings.horizontalPaddingDp.dp
+                            ),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .pointerInput(Unit) {
+                                    detectTapGestures { showControls = !showControls }
+                                }
+                        ) {
+                            items(verticalItems, key = { it.key }) { item ->
+                                when (item) {
+                                    is VerticalItem.ChapterHeader -> Unit
+                                    is VerticalItem.Paragraph -> {
+                                        Text(
+                                            text = item.text,
+                                            color = settings.theme.textColor,
+                                            fontSize = if (item.isTitle) (settings.fontSizeSp * 1.16f).sp else settings.fontSizeSp.sp,
+                                            fontWeight = if (item.isTitle) FontWeight.Bold else FontWeight.Normal,
+                                            lineHeight = ((if (item.isTitle) settings.fontSizeSp * 1.16f else settings.fontSizeSp) * settings.lineHeightMultiplier).sp,
+                                            fontFamily = activeFontFamily
+                                        )
+                                        Spacer(
+                                            modifier = Modifier.height(
+                                                if (item.isTitle) maxOf(settings.paragraphSpacingDp, 14f).dp
+                                                else settings.paragraphSpacingDp.dp
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // Subtle fixed top header & bottom-right % progress for Vertical mode
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(settings.theme.backgroundColor.copy(alpha = 0.92f))
+                                .padding(top = topSafeDp, start = settings.horizontalPaddingDp.dp, end = settings.horizontalPaddingDp.dp)
+                                .height(28.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = currentChapterTitle,
+                                color = settings.theme.secondaryTextColor,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
 
-                        Spacer(modifier = Modifier.height(20.dp))
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                .background(settings.theme.backgroundColor.copy(alpha = 0.92f))
+                                .padding(bottom = bottomSafeDp, start = settings.horizontalPaddingDp.dp, end = settings.horizontalPaddingDp.dp)
+                                .height(28.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            if (chapterIndex > 0) {
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clip(CircleShape)
-                                        .background(settings.theme.accentColor.copy(alpha = 0.14f))
-                                        .clickable { goPrevChapterLastPage() }
-                                        .padding(vertical = 12.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text("上一章", color = settings.theme.accentColor, fontWeight = FontWeight.SemiBold)
-                                }
-                            }
-                            if (chapterIndex < chapters.lastIndex) {
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clip(CircleShape)
-                                        .background(settings.theme.accentColor)
-                                        .clickable { goNextChapterFirstPage() }
-                                        .padding(vertical = 12.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text("下一章", color = Color.White, fontWeight = FontWeight.SemiBold)
-                                }
-                            }
+                            Text(
+                                text = book.title,
+                                color = settings.theme.secondaryTextColor,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                text = String.format(Locale.US, "%.1f%%", currentBookProgress * 100f),
+                                color = settings.theme.secondaryTextColor,
+                                fontSize = 11.sp
+                            )
                         }
-                        Spacer(modifier = Modifier.height(32.dp))
                     }
                 }
             }
         }
 
-        // Top Floating Liquid Glass Bar (Quick navigation)
+        // Top Floating Liquid Glass Bar (Back, Title, Search, Bookmark)
         AnimatedVisibility(
             visible = showControls,
             enter = fadeIn() + slideInVertically { -it },
@@ -528,118 +744,125 @@ fun ReaderScreen(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                    Text(
-                        text = "${currentPageIndex + 1}/${pages.size.coerceAtLeast(1)}",
-                        color = settings.theme.secondaryTextColor,
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(end = 10.dp)
-                    )
+
+                    // Search Button
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .clickable { showSearchSheet = true },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Search,
+                            contentDescription = "全书搜索",
+                            tint = settings.theme.textColor,
+                            modifier = Modifier.size(21.dp)
+                        )
+                    }
+
+                    // Bookmark Toggle Button
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .clickable {
+                                val existing = activeBookmark
+                                scope.launch {
+                                    if (existing != null) {
+                                        bookmarks = onRemoveBookmark(book.id, existing.id)
+                                        Toast.makeText(context, "已取消书签", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        val page = pages.getOrNull(currentPageIndex)
+                                        val excerpt = page?.slices?.joinToString("") { it.text }
+                                            ?.trim()
+                                            ?.take(48)
+                                            ?.ifEmpty { chapters.getOrNull(chapterIndex)?.title ?: "" }
+                                            ?: ""
+                                        val bm = BookmarkItem(
+                                            id = UUID.randomUUID().toString(),
+                                            bookId = book.id,
+                                            chapterIndex = chapterIndex,
+                                            chapterTitle = chapters.getOrNull(chapterIndex)?.title ?: book.title,
+                                            charOffset = page?.startOffset ?: targetCharOffset,
+                                            excerpt = excerpt,
+                                            progress = currentBookProgress
+                                        )
+                                        bookmarks = onAddBookmark(bm)
+                                        Toast.makeText(context, "已添加书签", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (activeBookmark != null) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder,
+                            contentDescription = "书签",
+                            tint = if (activeBookmark != null) settings.theme.accentColor else settings.theme.textColor,
+                            modifier = Modifier.size(21.dp)
+                        )
+                    }
                 }
             }
         }
 
-        // Clean Bottom Bar (Chapter Slider + 3 Uncluttered Actions: 目录 / 夜间 / 设置)
+        // Clean Bottom Bar (目录 / 书签 / 日间夜间 / 设置 — NO 上一章/下一章)
         AnimatedVisibility(
             visible = showControls,
             enter = fadeIn() + slideInVertically { it },
             exit = fadeOut() + slideOutVertically { it },
             modifier = Modifier.align(Alignment.BottomCenter)
         ) {
-            Column(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .windowInsetsPadding(WindowInsets.navigationBarsIgnoringVisibility)
                     .padding(horizontal = 16.dp, vertical = 14.dp)
-                    .shadow(20.dp, RoundedCornerShape(28.dp))
-                    .clip(RoundedCornerShape(28.dp))
+                    .shadow(20.dp, CircleShape)
+                    .clip(CircleShape)
                     .background(solidGlassBarBg)
-                    .border(0.9.dp, solidGlassBorder, RoundedCornerShape(28.dp))
+                    .border(0.9.dp, solidGlassBorder, CircleShape)
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null
                     ) {}
-                    .padding(horizontal = 18.dp, vertical = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly
             ) {
-                if (chapters.isNotEmpty()) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "上一章",
-                            color = if (chapterIndex > 0) settings.theme.accentColor else settings.theme.secondaryTextColor.copy(alpha = 0.4f),
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier
-                                .clip(CircleShape)
-                                .clickable(enabled = chapterIndex > 0) {
-                                    jumpToLastPageOnChapterLoad = false
-                                    targetCharOffset = 0
-                                    chapterIndex--
-                                }
-                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                        Slider(
-                            value = chapterIndex.toFloat(),
-                            onValueChange = {
-                                jumpToLastPageOnChapterLoad = false
-                                targetCharOffset = 0
-                                chapterIndex = it.toInt().coerceIn(0, chapters.lastIndex)
-                            },
-                            valueRange = 0f..chapters.lastIndex.coerceAtLeast(1).toFloat(),
-                            colors = SliderDefaults.colors(
-                                thumbColor = settings.theme.accentColor,
-                                activeTrackColor = settings.theme.accentColor
-                            ),
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(horizontal = 8.dp)
-                        )
-                        Text(
-                            text = "下一章",
-                            color = if (chapterIndex < chapters.lastIndex) settings.theme.accentColor else settings.theme.secondaryTextColor.copy(alpha = 0.4f),
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier
-                                .clip(CircleShape)
-                                .clickable(enabled = chapterIndex < chapters.lastIndex) {
-                                    jumpToLastPageOnChapterLoad = false
-                                    targetCharOffset = 0
-                                    chapterIndex++
-                                }
-                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
+                BottomDeckAction(
+                    icon = Icons.AutoMirrored.Rounded.FormatListBulleted,
+                    label = "目录",
+                    tint = settings.theme.textColor,
+                    onClick = {
+                        directoryInitialTab = 0
+                        showDirectorySheet = true
                     }
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly
-                ) {
-                    BottomDeckAction(
-                        icon = Icons.AutoMirrored.Rounded.FormatListBulleted,
-                        label = "目录",
-                        tint = settings.theme.textColor,
-                        onClick = { showChapterSheet = true }
-                    )
-                    BottomDeckAction(
-                        icon = if (settings.theme.isDark) Icons.Rounded.LightMode else Icons.Rounded.DarkMode,
-                        label = if (settings.theme.isDark) "日间" else "夜间",
-                        tint = settings.theme.textColor,
-                        onClick = {
-                            onUpdateSettings {
-                                it.copy(theme = if (it.theme.isDark) ReaderTheme.PAPER else ReaderTheme.MIDNIGHT)
-                            }
+                )
+                BottomDeckAction(
+                    icon = Icons.Rounded.BookmarkBorder,
+                    label = "书签",
+                    tint = settings.theme.textColor,
+                    onClick = {
+                        directoryInitialTab = 1
+                        showDirectorySheet = true
+                    }
+                )
+                BottomDeckAction(
+                    icon = if (settings.theme.isDark) Icons.Rounded.LightMode else Icons.Rounded.DarkMode,
+                    label = if (settings.theme.isDark) "日间" else "夜间",
+                    tint = settings.theme.textColor,
+                    onClick = {
+                        onUpdateSettings {
+                            it.copy(theme = if (it.theme.isDark) ReaderTheme.PAPER else ReaderTheme.MIDNIGHT)
                         }
-                    )
-                    BottomDeckAction(
-                        icon = Icons.Rounded.Settings,
-                        label = "设置",
-                        tint = settings.theme.accentColor,
-                        onClick = { showSettingsSheet = true }
-                    )
-                }
+                    }
+                )
+                BottomDeckAction(
+                    icon = Icons.Rounded.Settings,
+                    label = "设置",
+                    tint = settings.theme.accentColor,
+                    onClick = { showSettingsSheet = true }
+                )
             }
         }
     }
@@ -667,7 +890,6 @@ fun ReaderScreen(
                     fontWeight = FontWeight.Bold
                 )
 
-                // Typography Sliders Group (Font Size, Line Height, Paragraph Spacing)
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -720,7 +942,6 @@ fun ReaderScreen(
                     )
                 }
 
-                // Page Turn Mode (Simulation, Smooth, Vertical)
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -745,10 +966,7 @@ fun ReaderScreen(
                                 modifier = Modifier
                                     .weight(1f)
                                     .clip(RoundedCornerShape(12.dp))
-                                    .background(
-                                        if (selected) settings.theme.accentColor
-                                        else solidSheetBg
-                                    )
+                                    .background(if (selected) settings.theme.accentColor else solidSheetBg)
                                     .clickable { onUpdateSettings { it.copy(readingMode = mode) } }
                                     .padding(vertical = 10.dp),
                                 contentAlignment = Alignment.Center
@@ -764,7 +982,6 @@ fun ReaderScreen(
                     }
                 }
 
-                // Paper Theme
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -810,7 +1027,6 @@ fun ReaderScreen(
                     }
                 }
 
-                // Font Selector + Import Shortcut
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -875,30 +1091,33 @@ fun ReaderScreen(
         }
     }
 
-    // Solid Opaque Chapter Directory Sheet
-    if (showChapterSheet) {
+    // Solid Opaque Directory & Bookmarks Sheet
+    if (showDirectorySheet) {
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        var selectedSubTab by remember(directoryInitialTab) { mutableIntStateOf(directoryInitialTab) }
         val displayList = remember(chapters, reverseChapters) {
             if (reverseChapters) chapters.asReversed() else chapters
         }
         val listState = rememberLazyListState()
 
-        LaunchedEffect(showChapterSheet, reverseChapters) {
-            val targetPos = displayList.indexOfFirst { it.index == chapterIndex }
-            if (targetPos >= 0) {
-                listState.scrollToItem((targetPos - 3).coerceAtLeast(0))
+        LaunchedEffect(showDirectorySheet, selectedSubTab, reverseChapters) {
+            if (selectedSubTab == 0) {
+                val targetPos = displayList.indexOfFirst { it.index == chapterIndex }
+                if (targetPos >= 0) {
+                    listState.scrollToItem((targetPos - 3).coerceAtLeast(0))
+                }
             }
         }
 
         ModalBottomSheet(
-            onDismissRequest = { showChapterSheet = false },
+            onDismissRequest = { showDirectorySheet = false },
             sheetState = sheetState,
             containerColor = solidSheetBg
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .fillMaxHeight(0.76f)
+                    .fillMaxHeight(0.78f)
                     .padding(horizontal = 20.dp)
             ) {
                 Row(
@@ -906,76 +1125,357 @@ fun ReaderScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "章节目录 (${chapters.size})",
-                        color = settings.theme.textColor,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold
-                    )
                     Row(
                         modifier = Modifier
                             .clip(CircleShape)
-                            .background(settings.theme.accentColor.copy(alpha = 0.14f))
-                            .clickable { reverseChapters = !reverseChapters }
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                            .background(solidSheetCard)
+                            .padding(4.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.SwapVert,
-                            contentDescription = "倒序",
-                            tint = settings.theme.accentColor,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = if (reverseChapters) "倒序" else "正序",
-                            color = settings.theme.accentColor,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
+                        listOf("目录 (${chapters.size})", "书签 (${bookmarks.size})").forEachIndexed { idx, label ->
+                            val sel = selectedSubTab == idx
+                            Box(
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .background(if (sel) settings.theme.accentColor else Color.Transparent)
+                                    .clickable { selectedSubTab = idx }
+                                    .padding(horizontal = 14.dp, vertical = 7.dp)
+                            ) {
+                                Text(
+                                    text = label,
+                                    color = if (sel) Color.White else settings.theme.textColor,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
                     }
-                }
-                Spacer(modifier = Modifier.height(12.dp))
-                LazyColumn(
-                    state = listState,
-                    contentPadding = PaddingValues(bottom = 28.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    items(displayList, key = { it.index }) { ch ->
-                        val active = ch.index == chapterIndex
+
+                    if (selectedSubTab == 0) {
                         Row(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(14.dp))
-                                .background(
-                                    if (active) settings.theme.accentColor.copy(alpha = 0.14f)
-                                    else Color.Transparent
-                                )
-                                .clickable {
-                                    jumpToLastPageOnChapterLoad = false
-                                    targetCharOffset = 0
-                                    chapterIndex = ch.index
-                                    showChapterSheet = false
-                                    showControls = false
-                                }
-                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                                .clip(CircleShape)
+                                .background(settings.theme.accentColor.copy(alpha = 0.14f))
+                                .clickable { reverseChapters = !reverseChapters }
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = ch.title,
-                                color = if (active) settings.theme.accentColor else settings.theme.textColor,
-                                fontSize = 14.sp,
-                                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
+                            Icon(
+                                imageVector = Icons.Rounded.SwapVert,
+                                contentDescription = "倒序",
+                                tint = settings.theme.accentColor,
+                                modifier = Modifier.size(16.dp)
                             )
-                            if (active) {
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = if (reverseChapters) "倒序" else "正序",
+                                color = settings.theme.accentColor,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                if (selectedSubTab == 0) {
+                    LazyColumn(
+                        state = listState,
+                        contentPadding = PaddingValues(bottom = 28.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        items(displayList, key = { it.index }) { ch ->
+                            val active = ch.index == chapterIndex
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(
+                                        if (active) settings.theme.accentColor.copy(alpha = 0.14f)
+                                        else Color.Transparent
+                                    )
+                                    .clickable {
+                                        jumpToLastPageOnChapterLoad = false
+                                        targetCharOffset = 0
+                                        chapterIndex = ch.index
+                                        jumpNonce++
+                                        showDirectorySheet = false
+                                        showControls = false
+                                    }
+                                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 Text(
-                                    text = "当前",
+                                    text = ch.title,
+                                    color = if (active) settings.theme.accentColor else settings.theme.textColor,
+                                    fontSize = 14.sp,
+                                    fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                if (active) {
+                                    Text(
+                                        text = "当前",
+                                        color = settings.theme.accentColor,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    if (bookmarks.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 48.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "暂无书签，点击阅读顶栏书签图标即可添加",
+                                color = settings.theme.secondaryTextColor,
+                                fontSize = 13.sp
+                            )
+                        }
+                    } else {
+                        LazyColumn(
+                            contentPadding = PaddingValues(bottom = 28.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            items(bookmarks, key = { it.id }) { bm ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(16.dp))
+                                        .background(solidSheetCard)
+                                        .clickable {
+                                            jumpToLastPageOnChapterLoad = false
+                                            targetCharOffset = bm.charOffset
+                                            chapterIndex = bm.chapterIndex
+                                            jumpNonce++
+                                            showDirectorySheet = false
+                                            showControls = false
+                                        }
+                                        .padding(14.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(
+                                                text = bm.chapterTitle,
+                                                color = settings.theme.accentColor,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            Text(
+                                                text = String.format(Locale.US, "%.1f%%", bm.progress * 100f),
+                                                color = settings.theme.secondaryTextColor,
+                                                fontSize = 11.sp
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = bm.excerpt,
+                                            color = settings.theme.textColor,
+                                            fontSize = 13.sp,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(bm.createdAt)),
+                                            color = settings.theme.secondaryTextColor,
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .size(32.dp)
+                                            .clip(CircleShape)
+                                            .clickable {
+                                                scope.launch { bookmarks = onRemoveBookmark(book.id, bm.id) }
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.DeleteOutline,
+                                            contentDescription = "删除书签",
+                                            tint = settings.theme.secondaryTextColor,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Solid Opaque In-Book Search Sheet
+    if (showSearchSheet) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { showSearchSheet = false },
+            sheetState = sheetState,
+            containerColor = solidSheetBg
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.82f)
+                    .padding(horizontal = 20.dp)
+            ) {
+                Text(
+                    text = "全书搜索",
+                    color = settings.theme.textColor,
+                    fontSize = 19.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp)
+                        .clip(CircleShape)
+                        .background(solidSheetCard)
+                        .padding(horizontal = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Search,
+                        contentDescription = null,
+                        tint = settings.theme.secondaryTextColor,
+                        modifier = Modifier.size(19.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Box(modifier = Modifier.weight(1f)) {
+                        if (searchQuery.isEmpty()) {
+                            Text(
+                                text = "输入人物、关键词全书检索...",
+                                color = settings.theme.secondaryTextColor,
+                                fontSize = 14.sp
+                            )
+                        }
+                        BasicTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            singleLine = true,
+                            textStyle = TextStyle(color = settings.theme.textColor, fontSize = 14.sp),
+                            cursorBrush = SolidColor(settings.theme.accentColor),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    if (searchQuery.isNotEmpty()) {
+                        Icon(
+                            imageVector = Icons.Rounded.Close,
+                            contentDescription = "清空",
+                            tint = settings.theme.secondaryTextColor,
+                            modifier = Modifier
+                                .size(18.dp)
+                                .clickable {
+                                    searchQuery = ""
+                                    searchResults = emptyList()
+                                }
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
+                    Box(
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(settings.theme.accentColor)
+                            .clickable {
+                                val q = searchQuery.trim()
+                                if (q.isNotEmpty()) {
+                                    scope.launch {
+                                        isSearching = true
+                                        searchResults = onSearchBook(book, chapters, q)
+                                        isSearching = false
+                                    }
+                                }
+                            }
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text("搜索", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                if (isSearching) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(32.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(color = settings.theme.accentColor)
+                    }
+                } else if (searchResults.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(32.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = if (searchQuery.isBlank()) "输入关键词并点击搜索" else "未找到相关内容",
+                            color = settings.theme.secondaryTextColor,
+                            fontSize = 13.sp
+                        )
+                    }
+                } else {
+                    Text(
+                        text = "找到 ${searchResults.size} 处匹配",
+                        color = settings.theme.secondaryTextColor,
+                        fontSize = 12.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    LazyColumn(
+                        contentPadding = PaddingValues(bottom = 28.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(searchResults) { hit ->
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(solidSheetCard)
+                                    .clickable {
+                                        jumpToLastPageOnChapterLoad = false
+                                        targetCharOffset = hit.charOffset
+                                        chapterIndex = hit.chapterIndex
+                                        jumpNonce++
+                                        showSearchSheet = false
+                                        showControls = false
+                                    }
+                                    .padding(14.dp)
+                            ) {
+                                Text(
+                                    text = hit.chapterTitle,
                                     color = settings.theme.accentColor,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = hit.snippet,
+                                    color = settings.theme.textColor,
+                                    fontSize = 13.sp,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
@@ -995,13 +1495,13 @@ private fun BottomDeckAction(
 ) {
     Column(
         modifier = Modifier
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(16.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 20.dp, vertical = 6.dp),
+            .padding(horizontal = 16.dp, vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Icon(imageVector = icon, contentDescription = label, tint = tint, modifier = Modifier.size(22.dp))
-        Spacer(modifier = Modifier.height(3.dp))
+        Icon(imageVector = icon, contentDescription = label, tint = tint, modifier = Modifier.size(21.dp))
+        Spacer(modifier = Modifier.height(2.dp))
         Text(text = label, color = tint, fontSize = 11.sp, fontWeight = FontWeight.Medium)
     }
 }
@@ -1071,10 +1571,9 @@ private fun SettingSliderRow(
 @Composable
 private fun ReaderPageFrame(
     page: ReaderPage,
-    pageNumber: Int,
-    totalPages: Int,
     bookTitle: String,
     chapterTitle: String,
+    progressPercent: Float,
     topSafeDp: Dp,
     bottomSafeDp: Dp,
     horizontalPaddingDp: Float,
@@ -1179,7 +1678,7 @@ private fun ReaderPageFrame(
                 modifier = Modifier.weight(1f)
             )
             Text(
-                text = "$pageNumber / $totalPages",
+                text = String.format(Locale.US, "%.1f%%", progressPercent * 100f),
                 color = theme.secondaryTextColor,
                 fontSize = 11.sp
             )
@@ -1188,67 +1687,80 @@ private fun ReaderPageFrame(
 }
 
 /**
- * Realistic simulation page-curl pager with interactive drag peel, reverse-page edge, and cast shadow.
+ * Tuned simulation page-curl pager:
+ * - Responsive ~8% drag threshold or quick flick velocity (> 380 px/s)
+ * - Seamlessly curls across chapter boundaries using preloaded prev/next boundary pages
  */
 @Composable
 private fun SimulationCurlPager(
     pages: List<ReaderPage>,
     currentPageIndex: Int,
-    hasPrevChapter: Boolean,
-    hasNextChapter: Boolean,
+    prevChapterLastPage: ReaderPage?,
+    nextChapterFirstPage: ReaderPage?,
     onPageChanged: (Int) -> Unit,
     onRequestPrevChapter: () -> Unit,
     onRequestNextChapter: () -> Unit,
     onToggleMenu: () -> Unit,
     hideMenuIfShown: () -> Boolean,
     theme: ReaderTheme,
-    pageContent: @Composable (Int) -> Unit
+    pageContent: @Composable (ReaderPage, Int) -> Unit
 ) {
     val scope = rememberCoroutineScope()
-    val curlAnim = remember { Animatable(0f) } // -1..0 (next page peeling left), 0..1 (prev page pulling right)
-    var dragDirection by remember { mutableIntStateOf(0) } // -1 = turning to next, +1 = turning to prev
+    val curlAnim = remember { Animatable(0f) } // -1..0 turning next, 0..1 turning prev
+    var dragDirection by remember { mutableIntStateOf(0) } // -1 next, +1 prev
     var isAnimating by remember { mutableStateOf(false) }
 
-    fun animateTurnNext() {
-        if (isAnimating) return
+    val canGoNext = currentPageIndex < pages.lastIndex || nextChapterFirstPage != null
+    val canGoPrev = currentPageIndex > 0 || prevChapterLastPage != null
+
+    fun finishTurnNext() {
         if (currentPageIndex < pages.lastIndex) {
-            scope.launch {
-                isAnimating = true
-                dragDirection = -1
-                curlAnim.snapTo(0f)
-                curlAnim.animateTo(-1f, tween(320))
-                onPageChanged(currentPageIndex + 1)
-                curlAnim.snapTo(0f)
-                dragDirection = 0
-                isAnimating = false
-            }
-        } else if (hasNextChapter) {
+            onPageChanged(currentPageIndex + 1)
+        } else if (nextChapterFirstPage != null) {
             onRequestNextChapter()
         }
     }
 
-    fun animateTurnPrev() {
-        if (isAnimating) return
+    fun finishTurnPrev() {
         if (currentPageIndex > 0) {
-            scope.launch {
-                isAnimating = true
-                dragDirection = 1
-                curlAnim.snapTo(1f)
-                curlAnim.animateTo(0f, tween(320))
-                onPageChanged(currentPageIndex - 1)
-                curlAnim.snapTo(0f)
-                dragDirection = 0
-                isAnimating = false
-            }
-        } else if (hasPrevChapter) {
+            onPageChanged(currentPageIndex - 1)
+        } else if (prevChapterLastPage != null) {
             onRequestPrevChapter()
+        }
+    }
+
+    fun animateTurnNext() {
+        if (isAnimating || !canGoNext) return
+        scope.launch {
+            isAnimating = true
+            dragDirection = -1
+            curlAnim.snapTo(0f)
+            curlAnim.animateTo(-1f, tween(260))
+            finishTurnNext()
+            curlAnim.snapTo(0f)
+            dragDirection = 0
+            isAnimating = false
+        }
+    }
+
+    fun animateTurnPrev() {
+        if (isAnimating || !canGoPrev) return
+        scope.launch {
+            isAnimating = true
+            dragDirection = 1
+            curlAnim.snapTo(1f)
+            curlAnim.animateTo(0f, tween(260))
+            finishTurnPrev()
+            curlAnim.snapTo(0f)
+            dragDirection = 0
+            isAnimating = false
         }
     }
 
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(currentPageIndex, pages.size, hasPrevChapter, hasNextChapter) {
+            .pointerInput(currentPageIndex, pages.size, prevChapterLastPage, nextChapterFirstPage) {
                 detectTapGestures { offset ->
                     if (hideMenuIfShown()) return@detectTapGestures
                     val w = size.width.toFloat()
@@ -1259,58 +1771,58 @@ private fun SimulationCurlPager(
                     }
                 }
             }
-            .pointerInput(currentPageIndex, pages.size, hasPrevChapter, hasNextChapter) {
+            .pointerInput(currentPageIndex, pages.size, prevChapterLastPage, nextChapterFirstPage) {
                 var totalDragX = 0f
+                val velocityTracker = VelocityTracker()
                 detectHorizontalDragGestures(
                     onDragStart = {
                         if (isAnimating) return@detectHorizontalDragGestures
                         totalDragX = 0f
                         dragDirection = 0
+                        velocityTracker.resetTracking()
                     },
                     onHorizontalDrag = { change, dragAmount ->
                         if (isAnimating) return@detectHorizontalDragGestures
                         change.consume()
+                        velocityTracker.addPosition(change.uptimeMillis, change.position)
                         totalDragX += dragAmount
                         val w = size.width.toFloat().coerceAtLeast(1f)
                         if (dragDirection == 0) {
-                            if (totalDragX < -6f && (currentPageIndex < pages.lastIndex || hasNextChapter)) {
+                            if (totalDragX < -5f && canGoNext) {
                                 dragDirection = -1
-                            } else if (totalDragX > 6f && currentPageIndex > 0) {
+                            } else if (totalDragX > 5f && canGoPrev) {
                                 dragDirection = 1
                             }
                         }
-                        if (dragDirection == -1 && currentPageIndex < pages.lastIndex) {
+                        if (dragDirection == -1 && canGoNext) {
                             val progress = (totalDragX / w).coerceIn(-1f, 0f)
                             scope.launch { curlAnim.snapTo(progress) }
-                        } else if (dragDirection == 1 && currentPageIndex > 0) {
+                        } else if (dragDirection == 1 && canGoPrev) {
                             val progress = (1f - totalDragX / w).coerceIn(0f, 1f)
                             scope.launch { curlAnim.snapTo(progress) }
                         }
                     },
                     onDragEnd = {
                         if (isAnimating) return@detectHorizontalDragGestures
+                        val vx = velocityTracker.calculateVelocity().x
                         val v = curlAnim.value
                         scope.launch {
                             isAnimating = true
-                            if (dragDirection == -1) {
-                                if (currentPageIndex < pages.lastIndex) {
-                                    if (v < -0.18f) {
-                                        curlAnim.animateTo(-1f, tween(220))
-                                        onPageChanged(currentPageIndex + 1)
-                                    } else {
-                                        curlAnim.animateTo(0f, tween(180))
-                                    }
-                                } else if (totalDragX < -80f && hasNextChapter) {
-                                    onRequestNextChapter()
+                            if (dragDirection == -1 && canGoNext) {
+                                // ~8% screen drag or gentle left flick completes turn
+                                if (v < -0.08f || vx < -380f) {
+                                    curlAnim.animateTo(-1f, tween(200))
+                                    finishTurnNext()
+                                } else {
+                                    curlAnim.animateTo(0f, tween(150))
                                 }
-                            } else if (dragDirection == 1) {
-                                if (currentPageIndex > 0) {
-                                    if (v < 0.82f) {
-                                        curlAnim.animateTo(0f, tween(220))
-                                        onPageChanged(currentPageIndex - 1)
-                                    } else {
-                                        curlAnim.animateTo(1f, tween(180))
-                                    }
+                            } else if (dragDirection == 1 && canGoPrev) {
+                                // ~8% screen drag or gentle right flick completes turn
+                                if (v < 0.92f || vx > 380f) {
+                                    curlAnim.animateTo(0f, tween(200))
+                                    finishTurnPrev()
+                                } else {
+                                    curlAnim.animateTo(1f, tween(150))
                                 }
                             }
                             curlAnim.snapTo(0f)
@@ -1322,27 +1834,29 @@ private fun SimulationCurlPager(
             }
     ) {
         val widthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
-        val p = curlAnim.value // -1..0 when turning next, 0..1 when turning prev
+        val p = curlAnim.value
+        val curPage = pages[currentPageIndex]
 
-        val underIdx = when {
-            dragDirection == -1 && currentPageIndex < pages.lastIndex -> currentPageIndex + 1
-            else -> currentPageIndex
-        }
-        val topIdx = when {
-            dragDirection == 1 && currentPageIndex > 0 -> currentPageIndex - 1
-            else -> currentPageIndex
+        val (underPage, underChOffset) = when {
+            dragDirection == -1 && currentPageIndex < pages.lastIndex -> pages[currentPageIndex + 1] to 0
+            dragDirection == -1 && nextChapterFirstPage != null -> nextChapterFirstPage to 1
+            else -> curPage to 0
         }
 
-        // Underlying page
+        val (topPage, topChOffset) = when {
+            dragDirection == 1 && currentPageIndex > 0 -> pages[currentPageIndex - 1] to 0
+            dragDirection == 1 && prevChapterLastPage != null -> prevChapterLastPage to -1
+            else -> curPage to 0
+        }
+
         Box(modifier = Modifier.fillMaxSize()) {
-            pageContent(underIdx)
+            pageContent(underPage, underChOffset)
         }
 
-        // Peeling top page + curl shadow & reverse fold strip
-        if (dragDirection != 0 && (underIdx != topIdx)) {
+        if (dragDirection != 0 && !(underPage === topPage && underChOffset == topChOffset)) {
             val foldRatio = if (dragDirection == -1) (1f + p).coerceIn(0f, 1f) else (1f - p).coerceIn(0f, 1f)
             val foldX = widthPx * foldRatio
-            val curlWidthPx = (widthPx * 0.10f * (1f - abs(foldRatio - 0.5f) * 1.4f)).coerceAtLeast(18f)
+            val curlWidthPx = (widthPx * 0.09f * (1f - abs(foldRatio - 0.5f) * 1.4f)).coerceAtLeast(16f)
 
             Box(
                 modifier = Modifier
@@ -1359,15 +1873,13 @@ private fun SimulationCurlPager(
                             translationX = widthPx - foldX
                         }
                 ) {
-                    pageContent(topIdx)
+                    pageContent(topPage, topChOffset)
                 }
             }
 
-            // Realistic curl edge & cast shadow onto underlying page
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val edgeX = foldX.coerceIn(0f, size.width)
-                // Shadow cast onto underlying page to the right of the curl
-                val shadowW = (size.width * 0.08f).coerceAtLeast(24f)
+                val shadowW = (size.width * 0.075f).coerceAtLeast(22f)
                 drawRect(
                     brush = Brush.horizontalGradient(
                         colors = listOf(
@@ -1381,7 +1893,6 @@ private fun SimulationCurlPager(
                     size = Size(shadowW, size.height)
                 )
 
-                // Curled back-of-page highlight strip to the left of fold edge
                 val stripStart = (edgeX - curlWidthPx).coerceAtLeast(0f)
                 val paperBack = if (theme.isDark) Color(0xFF1F232B) else theme.backgroundColor.copy(alpha = 0.94f)
                 drawRect(

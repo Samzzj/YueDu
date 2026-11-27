@@ -7,6 +7,7 @@ import android.text.TextPaint
 import com.yuedu.reader.model.ChapterInfo
 import com.yuedu.reader.model.PageSlice
 import com.yuedu.reader.model.ReaderPage
+import com.yuedu.reader.model.SearchHit
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.BufferedReader
@@ -218,17 +219,68 @@ object TxtBookEngine {
             raf.seek(chapter.startByte)
             raf.readFully(buf)
         }
-        val raw = String(buf, StandardCharsets.UTF_8)
+        return parseParagraphsFromRaw(String(buf, StandardCharsets.UTF_8), chapter.title)
+    }
+
+    private fun parseParagraphsFromRaw(raw: String, chapterTitle: String): List<ChapterParagraph> {
         val lines = raw.lines().map { it.trim() }.filter { it.isNotEmpty() }
         val result = ArrayList<ChapterParagraph>(lines.size)
         var offset = 0
         lines.forEachIndexed { idx, line ->
-            val isHeading = idx == 0 && (line == chapter.title || chapterPatterns.any { it.matches(line) })
+            val isHeading = idx == 0 && (line == chapterTitle || chapterPatterns.any { it.matches(line) })
             val formatted = if (isHeading) line else "\u3000\u3000$line"
             result.add(ChapterParagraph(text = formatted, isTitle = isHeading, charStartOffset = offset))
             offset += formatted.length + 1
         }
         return result
+    }
+
+    fun searchInBook(
+        utf8File: File,
+        chapters: List<ChapterInfo>,
+        query: String,
+        maxResults: Int = 80
+    ): List<SearchHit> {
+        val q = query.trim()
+        if (q.isEmpty() || !utf8File.exists()) return emptyList()
+        val hits = mutableListOf<SearchHit>()
+
+        RandomAccessFile(utf8File, "r").use { raf ->
+            for (ch in chapters) {
+                if (hits.size >= maxResults) break
+                val len = (ch.endByte - ch.startByte).coerceAtLeast(0L).toInt()
+                if (len == 0) continue
+                val buf = ByteArray(len)
+                raf.seek(ch.startByte)
+                raf.readFully(buf)
+                val raw = String(buf, StandardCharsets.UTF_8)
+                if (!raw.contains(q, ignoreCase = true)) continue
+
+                val paragraphs = parseParagraphsFromRaw(raw, ch.title)
+                for (p in paragraphs) {
+                    var idx = p.text.indexOf(q, ignoreCase = true)
+                    while (idx >= 0) {
+                        val snippetStart = (idx - 14).coerceAtLeast(0)
+                        val snippetEnd = (idx + q.length + 28).coerceAtMost(p.text.length)
+                        val prefix = if (snippetStart > 0) "…" else ""
+                        val suffix = if (snippetEnd < p.text.length) "…" else ""
+                        val snippet = prefix + p.text.substring(snippetStart, snippetEnd).trim() + suffix
+                        hits.add(
+                            SearchHit(
+                                chapterIndex = ch.index,
+                                chapterTitle = ch.title,
+                                charOffset = p.charStartOffset + idx,
+                                snippet = snippet
+                            )
+                        )
+                        if (hits.size >= maxResults) break
+                        idx = p.text.indexOf(q, startIndex = idx + q.length, ignoreCase = true)
+                    }
+                    if (hits.size >= maxResults) break
+                }
+            }
+        }
+        return hits
     }
 
     fun paginateParagraphs(

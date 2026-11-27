@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoStories
 import androidx.compose.material.icons.rounded.Tune
-import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -39,9 +38,8 @@ import com.yuedu.reader.ui.components.AmbientGlassBackground
 import com.yuedu.reader.ui.components.GlassTabItem
 import com.yuedu.reader.ui.components.LiquidGlassFloatingTabBar
 import com.yuedu.reader.ui.screens.BookshelfScreen
-import com.yuedu.reader.ui.screens.FontsSettingsScreen
 import com.yuedu.reader.ui.screens.ReaderScreen
-import com.yuedu.reader.ui.screens.WifiTransferScreen
+import com.yuedu.reader.ui.screens.TransferAndSettingsScreen
 import com.yuedu.reader.ui.theme.YueDuTheme
 import kotlinx.coroutines.launch
 
@@ -152,6 +150,10 @@ fun YueDuApp(
                 resolveTypeface = { repository.getTypeface(it) },
                 loadChapters = { repository.loadChapters(it) },
                 loadChapterParagraphs = { b, ch -> repository.loadChapterParagraphs(b, ch) },
+                loadBookmarks = { repository.loadBookmarks(it) },
+                onAddBookmark = { repository.addBookmark(it) },
+                onRemoveBookmark = { bookId, bmId -> repository.removeBookmark(bookId, bmId) },
+                onSearchBook = { b, chs, q -> repository.searchBook(b, chs, q) },
                 onSaveProgress = { bookId, chIdx, offset, prog ->
                     scope.launch {
                         repository.updateBookProgress(bookId, chIdx, offset, prog)
@@ -162,7 +164,7 @@ fun YueDuApp(
                 },
                 onGoImportFonts = {
                     activeBookId = null
-                    selectedTab = 2
+                    selectedTab = 1
                 },
                 onExit = { activeBookId = null }
             )
@@ -170,8 +172,7 @@ fun YueDuApp(
             val tabs = remember {
                 listOf(
                     GlassTabItem("书架", Icons.Rounded.AutoStories),
-                    GlassTabItem("传书", Icons.Rounded.Wifi),
-                    GlassTabItem("字体设置", Icons.Rounded.Tune)
+                    GlassTabItem("传书设置", Icons.Rounded.Tune)
                 )
             }
 
@@ -194,10 +195,13 @@ fun YueDuApp(
                                 scope.launch { repository.deleteBook(book.id) }
                             }
                         )
-                        1 -> WifiTransferScreen(
-                            isRunning = isServerRunning,
+                        else -> TransferAndSettingsScreen(
+                            isWifiRunning = isServerRunning,
                             serverUrl = serverUrl,
                             recentTransfers = recentTransfers,
+                            fonts = fonts,
+                            settings = settings,
+                            resolveTypeface = { repository.getTypeface(it) },
                             onStartServer = {
                                 wifiServer.start().onFailure {
                                     Toast.makeText(context, it.message ?: "启动失败", Toast.LENGTH_SHORT).show()
@@ -206,29 +210,7 @@ fun YueDuApp(
                             onStopServer = { wifiServer.stop() },
                             onRefreshIp = { wifiServer.refreshUrl() },
                             onOpenUploadedBook = { bookId -> activeBookId = bookId },
-                            onApplyUploadedFont = { fontId ->
-                                scope.launch {
-                                    repository.updateSettings { it.copy(selectedFontId = fontId) }
-                                    Toast.makeText(context, "已切换为新导入的字体", Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        )
-                        else -> FontsSettingsScreen(
-                            fonts = fonts,
-                            settings = settings,
-                            isWifiRunning = isServerRunning,
-                            wifiServerUrl = serverUrl,
-                            resolveTypeface = { repository.getTypeface(it) },
                             onImportLocalFont = { fontPickerLauncher.launch(arrayOf("*/*")) },
-                            onStartWifiForFont = {
-                                if (!isServerRunning) {
-                                    wifiServer.start().onFailure {
-                                        Toast.makeText(context, it.message ?: "Wi-Fi 服务启动失败", Toast.LENGTH_SHORT).show()
-                                    }
-                                } else {
-                                    wifiServer.refreshUrl()
-                                }
-                            },
                             onSelectFont = { fontId ->
                                 scope.launch { repository.updateSettings { it.copy(selectedFontId = fontId) } }
                             },
@@ -242,12 +224,11 @@ fun YueDuApp(
                     }
                 }
 
-                // Floating iOS 27 Liquid Glass Tab Bar
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .navigationBarsPadding()
-                        .padding(horizontal = 24.dp, vertical = 14.dp)
+                        .padding(horizontal = 40.dp, vertical = 14.dp)
                 ) {
                     LiquidGlassFloatingTabBar(
                         tabs = tabs,
