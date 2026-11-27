@@ -411,7 +411,8 @@ class SherpaOfflineTtsEngine(private val context: Context) {
                 numThreads = 4,
                 provider = "cpu"
             ),
-            ruleFsts = "$dir/phone-zh.fst,$dir/date-zh.fst,$dir/number-zh.fst"
+            ruleFsts = "$dir/phone-zh.fst,$dir/date-zh.fst,$dir/number-zh.fst",
+            silenceScale = 0.05f
         )
         val created = OfflineTts(assetManager = context.assets, config = config)
         loadedKey = BUILTIN_YUNXI_KEY
@@ -521,16 +522,33 @@ class SherpaOfflineTtsEngine(private val context: Context) {
 
     private fun toSanitizedPcm16(samples: FloatArray, sampleRate: Int): ShortArray {
         if (samples.isEmpty() || sampleRate <= 0) return ShortArray(0)
-        val pcm = ShortArray(samples.size)
-        val fadeSamples = minOf(samples.size / 4, (sampleRate * 0.004f).toInt().coerceAtLeast(1))
-        for (i in samples.indices) {
-            var s = samples[i]
+
+        // Trim excessive leading/trailing silence (keep max ~20ms pad) so consecutive chunks flow smoothly
+        val threshold = 0.006f
+        val pad = (sampleRate * 0.02f).toInt().coerceAtLeast(1)
+        var start = 0
+        while (start < samples.size && (!samples[start].isFinite() || kotlin.math.abs(samples[start]) < threshold)) {
+            start++
+        }
+        var end = samples.size - 1
+        while (end > start && (!samples[end].isFinite() || kotlin.math.abs(samples[end]) < threshold)) {
+            end--
+        }
+        if (start >= end) return ShortArray(0)
+        start = (start - pad).coerceAtLeast(0)
+        end = (end + pad).coerceAtMost(samples.lastIndex)
+
+        val len = end - start + 1
+        val pcm = ShortArray(len)
+        val fadeSamples = minOf(len / 4, (sampleRate * 0.004f).toInt().coerceAtLeast(1))
+        for (i in 0 until len) {
+            var s = samples[start + i]
             if (!s.isFinite()) s = 0f
             s = s.coerceIn(-0.98f, 0.98f)
             if (i < fadeSamples) {
                 s *= (i.toFloat() / fadeSamples.toFloat())
-            } else if (i >= samples.size - fadeSamples) {
-                s *= ((samples.size - 1 - i).toFloat() / fadeSamples.toFloat())
+            } else if (i >= len - fadeSamples) {
+                s *= ((len - 1 - i).toFloat() / fadeSamples.toFloat())
             }
             pcm[i] = (s * 32767f).toInt().coerceIn(-32768, 32767).toShort()
         }

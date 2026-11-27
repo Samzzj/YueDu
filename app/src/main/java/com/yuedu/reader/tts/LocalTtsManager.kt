@@ -259,10 +259,10 @@ class LocalTtsManager(context: Context) {
     }
 
     /**
-     * Unified voice routing for BOTH previewVoice and speakFromIndex so preview and reading ALWAYS match:
-     * 1) If voice is built-in offline (云希 Kokoro FP32) -> run built-in Kokoro FP32 directly.
-     * 2) If user downloaded this voice's offline pack -> use that downloaded offline pack.
-     * 3) Else -> use EdgeNeuralTtsEngine online, falling back to built-in Kokoro FP32 云希 when offline.
+     * Unified voice routing for BOTH previewVoice and speakFromIndex:
+     * 1) If user downloaded this voice's offline pack -> use that downloaded offline pack.
+     * 2) Else (including built-in 云希 when online) -> use expressive EdgeNeuralTtsEngine with gapless pre-prepared MediaPlayer,
+     *    falling back seamlessly to built-in Kokoro FP32 云希 when offline.
      */
     fun previewVoice(settings: TtsSettings) {
         val sampleText = "清晨的微风拂过书页，杨凌合上手中的古籍，缓缓走向窗前，轻声说道，这一章的故事才刚刚开始。"
@@ -271,24 +271,6 @@ class LocalTtsManager(context: Context) {
 
         val selectedOption = resolveVoice(settings.voiceId)
         val packId = selectedOption.offlinePackId
-
-        if (selectedOption.isBuiltinOffline && sherpaEngine.isBuiltinAvailable()) {
-            previewJob = scope.launch {
-                runCatching {
-                    val audio = sherpaEngine.synthesizeBuiltinToPcm(
-                        sid = selectedOption.offlineSid,
-                        rawText = sampleText,
-                        speed = settings.speechRate
-                    )
-                    sherpaEngine.playStreamingPcm(audio)
-                }.onFailure {
-                    if (it !is CancellationException) {
-                        speakLocally(sampleText, settings, "preview")
-                    }
-                }
-            }
-            return
-        }
 
         if (packId != null && sherpaEngine.isPackDownloaded(packId)) {
             previewJob = scope.launch {
@@ -355,20 +337,14 @@ class LocalTtsManager(context: Context) {
         }
     }
 
+    private data class PreparedClip(
+        val file: File,
+        val player: MediaPlayer
+    )
+
     private fun speakFromIndex(startIdx: Int) {
         val selectedOption = resolveVoice(currentSettings.voiceId)
         val packId = selectedOption.offlinePackId
-
-        if (selectedOption.isBuiltinOffline && sherpaEngine.isBuiltinAvailable()) {
-            speakOfflineLoopWithLookahead(startIdx) { sentence ->
-                sherpaEngine.synthesizeBuiltinToPcm(
-                    sid = selectedOption.offlineSid,
-                    rawText = sentence.text,
-                    speed = currentSettings.speechRate
-                )
-            }
-            return
-        }
 
         if (packId != null && sherpaEngine.isPackDownloaded(packId)) {
             speakOfflineLoopWithLookahead(startIdx) { sentence ->
@@ -382,11 +358,14 @@ class LocalTtsManager(context: Context) {
             return
         }
 
-        // Online Edge Neural TTS with 3-sentence lookahead prefetch & automatic built-in Yunxi offline fallback when offline
+        // Online Edge Neural TTS with 4-sentence lookahead prefetch + pre-prepared MediaPlayer handoff
+        // and built-in Kokoro FP32 云希 offline fallback when offline.
         playJob?.cancel()
         playJob = scope.launch {
             var idx = startIdx
             val prefetched = HashMap<Int, Deferred<ByteArray>>()
+            val pendingClips = java.util.Collections.synchronizedList(mutableListOf<PreparedClip>())
+            var nextClipDeferred: Deferred<PreparedClip>? = null
 
             fun enqueuePrefetch(targetIdx: Int) {
                 if (targetIdx >= currentSentences.size || prefetched.containsKey(targetIdx)) return
@@ -400,28 +379,69 @@ class LocalTtsManager(context: Context) {
                 }
             }
 
+            fun prepareClipAsync(mp3Deferred: Deferred<ByteArray>): Deferred<PreparedClip> =
+                async(Dispatchers.IO) {
+                    val bytes = mp3Deferred.await()
+                    val tempFile = File(appContext.cacheDir, "tts_${UUID.randomUUID()}.mp3").apply {
+                        writeBytes(bytes)
+                    }
+                    try {
+                        val mp = MediaPlayer()
+                        mp.setDataSource(tempFile.absolutePath)
+                        mp.prepare()
+                        PreparedClip(tempFile, mp).also { pendingClips.add(it) }
+                    } catch (t: Throwable) {
+                        runCatching { tempFile.delete() }
+                        throw t
+                    }
+                }
+
+            fun cleanupPending() {
+                prefetched.values.forEach { it.cancel() }
+                prefetched.clear()
+                nextClipDeferred?.cancel()
+                nextClipDeferred = null
+                synchronized(pendingClips) {
+                    pendingClips.forEach { clip ->
+                        runCatching { clip.player.release() }
+                        runCatching { clip.file.delete() }
+                    }
+                    pendingClips.clear()
+                }
+            }
+
             try {
                 while (idx < currentSentences.size && _isPlaying.value && !_isPaused.value) {
                     val sentence = currentSentences[idx]
                     currentIndex = idx
                     _activeSentence.value = sentence
 
-                    enqueuePrefetch(idx)
+                    if (nextClipDeferred == null) enqueuePrefetch(idx)
                     enqueuePrefetch(idx + 1)
                     enqueuePrefetch(idx + 2)
                     enqueuePrefetch(idx + 3)
 
-                    val currentDeferred = prefetched.remove(idx)!!
+                    val currentClipDeferred = nextClipDeferred ?: prepareClipAsync(prefetched.remove(idx)!!)
+                    nextClipDeferred = if (idx + 1 < currentSentences.size) {
+                        prepareClipAsync(prefetched.remove(idx + 1)!!)
+                    } else {
+                        null
+                    }
+
                     try {
-                        val mp3Bytes = currentDeferred.await()
-                        if (!_isPlaying.value || _isPaused.value) break
-                        playMp3Blocking(mp3Bytes)
+                        val clip = currentClipDeferred.await()
+                        pendingClips.remove(clip)
+                        if (!_isPlaying.value || _isPaused.value) {
+                            runCatching { clip.player.release() }
+                            runCatching { clip.file.delete() }
+                            break
+                        }
+                        playPreparedClipBlocking(clip)
                     } catch (ce: CancellationException) {
                         throw ce
                     } catch (_: Exception) {
                         // Online synthesis failed after retries -> fall back to built-in offline Yunxi smoothly
-                        prefetched.values.forEach { it.cancel() }
-                        prefetched.clear()
+                        cleanupPending()
                         if (sherpaEngine.isBuiltinAvailable()) {
                             speakOfflineLoopWithLookahead(idx) { fallbackSentence ->
                                 sherpaEngine.synthesizeBuiltinToPcm(
@@ -444,9 +464,44 @@ class LocalTtsManager(context: Context) {
                     if (currentSettings.sleepTimerMinutes == -1) stop() else onChapterFinishedCallback?.invoke()
                 }
             } finally {
-                prefetched.values.forEach { it.cancel() }
-                prefetched.clear()
+                cleanupPending()
             }
+        }
+    }
+
+    private suspend fun playPreparedClipBlocking(clip: PreparedClip) {
+        try {
+            suspendCancellableCoroutine<Unit> { cont ->
+                val resumed = AtomicBoolean(false)
+                releaseMediaPlayer()
+                val mp = clip.player
+                mediaPlayer = mp
+                mp.setOnCompletionListener {
+                    releaseMediaPlayer()
+                    if (resumed.compareAndSet(false, true) && cont.isActive) {
+                        cont.resumeWith(Result.success(Unit))
+                    }
+                }
+                mp.setOnErrorListener { _, _, _ ->
+                    releaseMediaPlayer()
+                    if (resumed.compareAndSet(false, true) && cont.isActive) {
+                        cont.resumeWith(Result.failure(IllegalStateException("音频播放失败")))
+                    }
+                    true
+                }
+                runCatching { mp.start() }.onFailure { err ->
+                    releaseMediaPlayer()
+                    if (resumed.compareAndSet(false, true) && cont.isActive) {
+                        cont.resumeWith(Result.failure(err))
+                    }
+                }
+                cont.invokeOnCancellation {
+                    resumed.set(true)
+                    releaseMediaPlayer()
+                }
+            }
+        } finally {
+            runCatching { clip.file.delete() }
         }
     }
 
@@ -636,7 +691,8 @@ class LocalTtsManager(context: Context) {
                 var i = 0
                 while (i < text.length) {
                     val ch = text[i]
-                    val isEnd = ch in sentenceBreakChars || (i - segStart >= 110 && (ch == '，' || ch == ','))
+                    val isEnd = (ch in sentenceBreakChars && (i - segStart >= 32 || ch == '\n')) ||
+                        (i - segStart >= 100 && (ch == '，' || ch == ','))
                     if (isEnd || i == text.lastIndex) {
                         var end = i + 1
                         while (end < text.length && text[end] in setOf('”', '’', '」', '』', ')', '）', '"', '\'')) {

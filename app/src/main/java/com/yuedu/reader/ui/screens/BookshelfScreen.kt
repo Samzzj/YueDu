@@ -36,25 +36,21 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AutoStories
-import androidx.compose.material.icons.rounded.BrightnessAuto
-import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
-import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.FontDownload
 import androidx.compose.material.icons.rounded.GridView
-import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.ViewAgenda
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -139,7 +135,6 @@ fun BookshelfScreen(
     var showImportMenu by remember { mutableStateOf(false) }
     var showWifiSheet by remember { mutableStateOf(false) }
     var showFontSheet by remember { mutableStateOf(false) }
-    var showAppearanceMenu by remember { mutableStateOf(false) }
 
     val filtered = remember(books, query) {
         val q = query.trim()
@@ -177,54 +172,19 @@ fun BookshelfScreen(
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box {
-                    LiquidGlassButton(
-                        onClick = { showAppearanceMenu = true },
-                        modifier = Modifier.size(42.dp)
-                    ) {
-                        Icon(
-                            imageVector = when (settings.appAppearance) {
-                                AppAppearance.SYSTEM -> Icons.Rounded.BrightnessAuto
-                                AppAppearance.LIGHT -> Icons.Rounded.LightMode
-                                AppAppearance.DARK -> Icons.Rounded.DarkMode
-                            },
-                            contentDescription = "应用外观",
-                            tint = glass.textPrimary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-
-                    DropdownMenu(
-                        expanded = showAppearanceMenu,
-                        onDismissRequest = { showAppearanceMenu = false }
-                    ) {
-                        AppAppearance.entries.forEach { mode ->
-                            val selected = settings.appAppearance == mode
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        text = mode.label,
-                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                                        color = if (selected) glass.accent else glass.textPrimary
-                                    )
-                                },
-                                trailingIcon = if (selected) {
-                                    {
-                                        Icon(
-                                            imageVector = Icons.Rounded.Check,
-                                            contentDescription = null,
-                                            tint = glass.accent,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    }
-                                } else null,
-                                onClick = {
-                                    showAppearanceMenu = false
-                                    onChangeAppearance(mode)
-                                }
-                            )
-                        }
-                    }
+                LiquidGlassButton(
+                    onClick = {
+                        val nextMode = if (glass.isDark) AppAppearance.LIGHT else AppAppearance.DARK
+                        onChangeAppearance(nextMode)
+                    },
+                    modifier = Modifier.size(42.dp)
+                ) {
+                    Icon(
+                        imageVector = if (glass.isDark) Icons.Outlined.LightMode else Icons.Outlined.DarkMode,
+                        contentDescription = if (glass.isDark) "切换浅色" else "切换深色",
+                        tint = glass.textPrimary,
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
 
                 LiquidGlassButton(

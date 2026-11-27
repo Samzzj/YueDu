@@ -74,28 +74,27 @@ jobs:
 
       - name: Rename and Verify APK
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk YueDu-v0.7.0-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk YueDu-v0.8.0-debug.apk
           APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n1)
-          "$APKSIGNER" verify --print-certs YueDu-v0.7.0-debug.apk
+          "$APKSIGNER" verify --print-certs YueDu-v0.8.0-debug.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: YueDu-v0.7.0-debug-apk
-          path: YueDu-v0.7.0-debug.apk
+          name: YueDu-v0.8.0-debug-apk
+          path: YueDu-v0.8.0-debug.apk
 
-      - name: Publish v0.7.0 Release
+      - name: Publish v0.8.0 Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.7.0-preview
-          name: 悦读 YueDu v0.7.0
+          tag_name: v0.8.0-preview
+          name: 悦读 YueDu v0.8.0
           body: |
-            悦读 YueDu v0.7.0 更新内容：
-            - 安装包内置 Kokoro FP32 全精度「云希」离线音色，试听与正文朗读完全一致且无底噪
-            - 离线语音文本规范化将逗号收音转为句号分隔，彻底消除句尾悬空逗号「耶」拖音
-            - 修复「小贝」离线包自动补充下载 vocos-22khz-univ 声码器的问题
-            - 书架顶部亮暗外观切换收纳至右上角圆形按钮，并修复「书架还是空的」居中对齐
-          files: YueDu-v0.7.0-debug.apk
+            悦读 YueDu v0.8.0 更新内容：
+            - 书架右上角外观按钮改为一键直接切换亮色/暗色（月亮/太阳图标，点击即切换无需弹窗）
+            - 「云希」联网朗读恢复为高情感拟真在线引擎，并加入预准备播放器实现句间零卡顿连贯播报；断网时自动无缝切入内置 Kokoro FP32 兜底
+            - 优化离线合成静音裁剪与逗号分段策略，明显缩短停顿并保持更自然的停顿韵律
+          files: YueDu-v0.8.0-debug.apk
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
