@@ -5,9 +5,6 @@ import com.yuedu.reader.data.BookRepository
 import com.yuedu.reader.model.TransferKind
 import com.yuedu.reader.model.WifiTransferLog
 import fi.iki.elonen.NanoHTTPD
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -20,13 +17,14 @@ import org.json.JSONObject
 import java.io.File
 import java.net.Inet4Address
 import java.net.NetworkInterface
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 import java.util.UUID
 
 class WifiTransferServer(
     private val context: Context,
     private val repository: BookRepository
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var httpd: EmbeddedHttpd? = null
 
     private val _isRunning = MutableStateFlow(false)
@@ -119,7 +117,6 @@ class WifiTransferServer(
                                     put("title", b.title)
                                     put("fileSize", b.fileSize)
                                     put("chapterCount", b.chapterCount)
-                                    put("encoding", b.detectedEncoding)
                                 })
                             }
                         })
@@ -142,6 +139,10 @@ class WifiTransferServer(
 
         private fun handleUpload(session: IHTTPSession): Response {
             return try {
+                val queryName = session.parameters["name"]?.firstOrNull()?.let { raw ->
+                    runCatching { URLDecoder.decode(raw, StandardCharsets.UTF_8.name()) }.getOrNull()
+                }
+
                 val files = HashMap<String, String>()
                 session.parseBody(files)
 
@@ -149,13 +150,25 @@ class WifiTransferServer(
                     ?: return jsonError(Response.Status.BAD_REQUEST, "未接收到文件")
                 val tempFile = File(tempPath)
 
-                val rawName = session.parameters["originalName"]?.firstOrNull()
-                    ?: session.parameters["file"]?.firstOrNull()
+                val encodedFormName = session.parameters["encodedName"]?.firstOrNull()?.let { raw ->
+                    runCatching { URLDecoder.decode(raw, StandardCharsets.UTF_8.name()) }.getOrNull()
+                }
+                val rawName = encodedFormName
+                    ?: queryName
+                    ?: session.parameters["originalName"]?.firstOrNull()?.let {
+                        BookRepository.repairMojibakeIfNeeded(it)
+                    }
+                    ?: session.parameters["file"]?.firstOrNull()?.let {
+                        BookRepository.repairMojibakeIfNeeded(it)
+                    }
                     ?: "upload.txt"
-                val fileName = rawName.substringAfterLast('/').substringAfterLast('\\')
+
+                val fileName = BookRepository.repairMojibakeIfNeeded(
+                    rawName.substringAfterLast('/').substringAfterLast('\\')
+                )
                 val ext = fileName.substringAfterLast('.', "").lowercase()
 
-                val log = runBlocking(Dispatchers.IO) {
+                val log = runBlocking(kotlinx.coroutines.Dispatchers.IO) {
                     when (ext) {
                         "txt" -> {
                             val book = repository.importBookFromTempFile(tempFile, fileName)
@@ -212,20 +225,20 @@ class WifiTransferServer(
         <head>
           <meta charset="UTF-8" />
           <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-          <title>悦读 · Wi-Fi 传书中心</title>
+          <title>悦读 · Wi-Fi 传书与字体导入</title>
           <style>
             :root {
               color-scheme: light dark;
-              --glass-bg: rgba(255, 255, 255, 0.66);
-              --glass-border: rgba(255, 255, 255, 0.72);
+              --glass-bg: rgba(255, 255, 255, 0.88);
+              --glass-border: rgba(255, 255, 255, 0.9);
               --text-primary: #1d1d1f;
               --text-secondary: #6e6e73;
               --accent: #007aff;
             }
             @media (prefers-color-scheme: dark) {
               :root {
-                --glass-bg: rgba(28, 28, 34, 0.72);
-                --glass-border: rgba(255, 255, 255, 0.16);
+                --glass-bg: rgba(28, 28, 34, 0.90);
+                --glass-border: rgba(255, 255, 255, 0.14);
                 --text-primary: #f5f5f7;
                 --text-secondary: #a1a1a6;
                 --accent: #3898ff;
@@ -238,46 +251,42 @@ class WifiTransferServer(
               padding: 36px 20px;
               color: var(--text-primary);
               background:
-                radial-gradient(circle at 15% 20%, rgba(0, 122, 255, 0.22), transparent 42%),
-                radial-gradient(circle at 85% 18%, rgba(88, 86, 214, 0.22), transparent 45%),
-                radial-gradient(circle at 50% 85%, rgba(52, 199, 89, 0.16), transparent 45%),
+                radial-gradient(circle at 15% 20%, rgba(0, 122, 255, 0.18), transparent 42%),
+                radial-gradient(circle at 85% 18%, rgba(88, 86, 214, 0.18), transparent 45%),
                 #eef2f8;
             }
             @media (prefers-color-scheme: dark) {
               body {
                 background:
-                  radial-gradient(circle at 15% 20%, rgba(10, 132, 255, 0.25), transparent 42%),
-                  radial-gradient(circle at 85% 18%, rgba(94, 92, 230, 0.25), transparent 45%),
+                  radial-gradient(circle at 15% 20%, rgba(10, 132, 255, 0.22), transparent 42%),
+                  radial-gradient(circle at 85% 18%, rgba(94, 92, 230, 0.22), transparent 45%),
                   #090b10;
               }
             }
             .wrap { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
-            .glass {
+            .card {
               background: var(--glass-bg);
-              backdrop-filter: blur(28px) saturate(180%);
-              -webkit-backdrop-filter: blur(28px) saturate(180%);
+              backdrop-filter: blur(24px);
               border: 1px solid var(--glass-border);
-              border-radius: 28px;
-              box-shadow: 0 20px 50px rgba(0,0,0,0.08);
-              padding: 28px;
+              border-radius: 24px;
+              box-shadow: 0 18px 40px rgba(0,0,0,0.08);
+              padding: 26px;
             }
-            h1 { margin: 0 0 6px; font-size: 30px; letter-spacing: -0.5px; }
+            h1 { margin: 0 0 6px; font-size: 28px; letter-spacing: -0.5px; }
             .sub { color: var(--text-secondary); margin: 0; font-size: 14px; }
             .dropzone {
-              margin-top: 22px;
+              margin-top: 20px;
               border: 2px dashed rgba(0, 122, 255, 0.42);
-              border-radius: 22px;
-              padding: 44px 20px;
+              border-radius: 20px;
+              padding: 40px 20px;
               text-align: center;
               cursor: pointer;
-              transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
               background: rgba(0, 122, 255, 0.04);
             }
-            .dropzone.drag { transform: scale(1.01); background: rgba(0, 122, 255, 0.11); border-color: var(--accent); }
+            .dropzone.drag { background: rgba(0, 122, 255, 0.12); border-color: var(--accent); }
+            .btn-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 16px; }
             .btn {
-              display: inline-block;
-              margin-top: 14px;
-              padding: 11px 24px;
+              padding: 10px 20px;
               border-radius: 999px;
               background: var(--accent);
               color: #fff;
@@ -286,10 +295,11 @@ class WifiTransferServer(
               border: none;
               cursor: pointer;
             }
+            .btn.secondary { background: rgba(0,122,255,0.14); color: var(--accent); }
             .queue { margin-top: 18px; display: flex; flex-direction: column; gap: 10px; }
             .item {
               display: flex; align-items: center; justify-content: space-between;
-              padding: 12px 16px; border-radius: 16px;
+              padding: 12px 16px; border-radius: 14px;
               background: rgba(120, 120, 128, 0.09);
               font-size: 14px;
             }
@@ -299,29 +309,33 @@ class WifiTransferServer(
             .list-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
             @media (max-width: 640px) { .list-grid { grid-template-columns: 1fr; } }
             ul { list-style: none; padding: 0; margin: 12px 0 0; display: flex; flex-direction: column; gap: 8px; }
-            li { padding: 10px 14px; border-radius: 14px; background: rgba(120,120,128,0.08); font-size: 13px; display: flex; justify-content: space-between; gap: 8px; }
+            li { padding: 10px 14px; border-radius: 12px; background: rgba(120,120,128,0.08); font-size: 13px; display: flex; justify-content: space-between; gap: 8px; }
           </style>
         </head>
         <body>
           <div class="wrap">
-            <div class="glass">
-              <h1>悦读 · Wi-Fi 传书</h1>
+            <div class="card">
+              <h1>悦读 · Wi-Fi 传书与字体导入</h1>
               <p class="sub">将电脑上的 <b>.txt 小说</b> 或 <b>.ttf / .otf / .ttc 字体</b> 拖入下方区域，自动同步至手机。</p>
               <div id="drop" class="dropzone">
-                <div style="font-size:17px;font-weight:600;">拖拽文件到这里上传</div>
-                <div class="sub" style="margin-top:6px;">支持多文件批量传输 · 自动识别 GBK / UTF-8 编码</div>
-                <button class="btn" type="button" onclick="document.getElementById('picker').click()">选择电脑文件</button>
-                <input id="picker" type="file" multiple accept=".txt,.ttf,.otf,.ttc" style="display:none" />
+                <div style="font-size:17px;font-weight:600;">拖拽书籍或字体文件到这里</div>
+                <div class="sub" style="margin-top:6px;">支持中文文件名与批量传输</div>
+                <div class="btn-row">
+                  <button class="btn" type="button" onclick="document.getElementById('bookPicker').click()">上传 TXT 书籍</button>
+                  <button class="btn secondary" type="button" onclick="document.getElementById('fontPicker').click()">上传自定义字体</button>
+                </div>
+                <input id="bookPicker" type="file" multiple accept=".txt" style="display:none" />
+                <input id="fontPicker" type="file" multiple accept=".ttf,.otf,.ttc" style="display:none" />
               </div>
               <div id="queue" class="queue"></div>
             </div>
 
             <div class="list-grid">
-              <div class="glass">
+              <div class="card">
                 <div style="font-weight:700;font-size:16px;">手机书架书籍</div>
                 <ul id="books"></ul>
               </div>
-              <div class="glass">
+              <div class="card">
                 <div style="font-weight:700;font-size:16px;">已导入字体</div>
                 <ul id="fonts"></ul>
               </div>
@@ -330,7 +344,8 @@ class WifiTransferServer(
 
           <script>
             const drop = document.getElementById('drop');
-            const picker = document.getElementById('picker');
+            const bookPicker = document.getElementById('bookPicker');
+            const fontPicker = document.getElementById('fontPicker');
             const queue = document.getElementById('queue');
 
             function fmtSize(b) {
@@ -363,11 +378,11 @@ class WifiTransferServer(
                 const badge = row.querySelector('.pill');
 
                 const fd = new FormData();
-                fd.append('originalName', file.name);
+                fd.append('encodedName', encodeURIComponent(file.name));
                 fd.append('file', file);
 
                 const xhr = new XMLHttpRequest();
-                xhr.open('POST', '/upload', true);
+                xhr.open('POST', '/upload?name=' + encodeURIComponent(file.name), true);
                 xhr.upload.onprogress = (ev) => {
                   if (ev.lengthComputable) {
                     badge.textContent = Math.round((ev.loaded / ev.total) * 100) + '%';
@@ -412,10 +427,8 @@ class WifiTransferServer(
               drop.classList.remove('drag');
               handleFiles(e.dataTransfer.files);
             });
-            picker.addEventListener('change', (e) => {
-              handleFiles(e.target.files);
-              picker.value = '';
-            });
+            bookPicker.addEventListener('change', (e) => { handleFiles(e.target.files); bookPicker.value = ''; });
+            fontPicker.addEventListener('change', (e) => { handleFiles(e.target.files); fontPicker.value = ''; });
             refreshLibrary();
           </script>
         </body>

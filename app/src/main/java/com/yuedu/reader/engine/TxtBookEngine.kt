@@ -5,12 +5,12 @@ import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
 import com.yuedu.reader.model.ChapterInfo
+import com.yuedu.reader.model.PageSlice
 import com.yuedu.reader.model.ReaderPage
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.BufferedReader
 import java.io.File
-import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.InputStreamReader
@@ -34,6 +34,12 @@ object TxtBookEngine {
         val chapters: List<ChapterInfo>
     )
 
+    data class ChapterParagraph(
+        val text: String,
+        val isTitle: Boolean,
+        val charStartOffset: Int
+    )
+
     fun detectCharset(sampleBytes: ByteArray, length: Int): Charset {
         if (length >= 3 &&
             sampleBytes[0] == 0xEF.toByte() &&
@@ -51,7 +57,6 @@ object TxtBookEngine {
             }
         }
 
-        // Trim potential incomplete trailing UTF-8 multibyte sequence in sample
         var checkLen = length
         while (checkLen > 0 && checkLen > length - 4 && (sampleBytes[checkLen - 1].toInt() and 0xC0) == 0x80) {
             checkLen--
@@ -72,9 +77,6 @@ object TxtBookEngine {
         }
     }
 
-    /**
-     * Normalizes an arbitrary TXT input stream into a clean UTF-8 file and builds its chapter index.
-     */
     fun transcodeAndIndex(inputStreamFactory: () -> InputStream, targetUtf8File: File): ImportResult {
         val sample = ByteArray(65536)
         var sampleRead = 0
@@ -159,7 +161,6 @@ object TxtBookEngine {
         val finalChapters = if (!hasDetectedHeading && currentByteOffset > 24_000L) {
             splitLargeChapter(targetUtf8File, 0L, currentByteOffset, maxChunkBytes = 18_000L)
         } else {
-            // Split any extra-large chapters (> 150 KB) so pagination stays instant
             val balanced = mutableListOf<ChapterInfo>()
             for (ch in chapters) {
                 if (ch.endByte - ch.startByte > 150_000L) {
@@ -209,81 +210,125 @@ object TxtBookEngine {
         return result
     }
 
-    fun readChapterText(utf8File: File, chapter: ChapterInfo): String {
+    fun readChapterParagraphs(utf8File: File, chapter: ChapterInfo): List<ChapterParagraph> {
         val len = (chapter.endByte - chapter.startByte).coerceAtLeast(0L).toInt()
-        if (len == 0) return ""
+        if (len == 0) return emptyList()
         val buf = ByteArray(len)
         RandomAccessFile(utf8File, "r").use { raf ->
             raf.seek(chapter.startByte)
             raf.readFully(buf)
         }
-        // Format paragraphs with subtle indentation & double-newline breathing space
         val raw = String(buf, StandardCharsets.UTF_8)
-        return raw.lines()
-            .filter { it.isNotBlank() }
-            .joinToString("\n\n") { line -> "\u3000\u3000${line.trim()}" }
+        val lines = raw.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val result = ArrayList<ChapterParagraph>(lines.size)
+        var offset = 0
+        lines.forEachIndexed { idx, line ->
+            val isHeading = idx == 0 && (line == chapter.title || chapterPatterns.any { it.matches(line) })
+            val formatted = if (isHeading) line else "\u3000\u3000$line"
+            result.add(ChapterParagraph(text = formatted, isTitle = isHeading, charStartOffset = offset))
+            offset += formatted.length + 1
+        }
+        return result
     }
 
-    fun paginateChapter(
-        text: String,
+    fun paginateParagraphs(
+        paragraphs: List<ChapterParagraph>,
         widthPx: Int,
         heightPx: Int,
         textSizePx: Float,
         lineHeightMultiplier: Float,
+        paragraphSpacingPx: Float,
         typeface: Typeface
     ): List<ReaderPage> {
-        if (text.isEmpty() || widthPx <= 0 || heightPx <= 0) {
-            return listOf(ReaderPage(0, 0, text.length, text))
+        if (paragraphs.isEmpty() || widthPx <= 0 || heightPx <= 0) {
+            return listOf(ReaderPage(0, 0, 0, emptyList()))
         }
 
-        val paint = TextPaint().apply {
+        val bodyPaint = TextPaint().apply {
             isAntiAlias = true
             this.textSize = textSizePx
             this.typeface = typeface
         }
-
-        val layout = StaticLayout.Builder
-            .obtain(text, 0, text.length, paint, widthPx)
-            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-            .setLineSpacing(0f, lineHeightMultiplier)
-            .setIncludePad(false)
-            .build()
+        val titlePaint = TextPaint().apply {
+            isAntiAlias = true
+            this.textSize = textSizePx * 1.16f
+            this.typeface = Typeface.create(typeface, Typeface.BOLD)
+        }
 
         val pages = mutableListOf<ReaderPage>()
-        var pageStartLine = 0
-        var pageStartY = layout.getLineTop(0)
+        var currentSlices = mutableListOf<PageSlice>()
+        var pageStartOffset = paragraphs.first().charStartOffset
+        var currentY = 0f
 
-        for (line in 0 until layout.lineCount) {
-            val lineBottom = layout.getLineBottom(line)
-            if (lineBottom - pageStartY > heightPx && line > pageStartLine) {
-                val startOffset = layout.getLineStart(pageStartLine)
-                val endOffset = layout.getLineStart(line)
+        fun flushPage(endOffset: Int) {
+            if (currentSlices.isNotEmpty()) {
                 pages.add(
                     ReaderPage(
                         pageIndex = pages.size,
-                        startOffset = startOffset,
+                        startOffset = pageStartOffset,
                         endOffset = endOffset,
-                        text = text.substring(startOffset, endOffset)
+                        slices = currentSlices.toList()
                     )
                 )
-                pageStartLine = line
-                pageStartY = layout.getLineTop(line)
+                currentSlices = mutableListOf()
+                currentY = 0f
             }
         }
 
-        if (pageStartLine < layout.lineCount) {
-            val startOffset = layout.getLineStart(pageStartLine)
-            val endOffset = text.length
-            pages.add(
-                ReaderPage(
-                    pageIndex = pages.size,
-                    startOffset = startOffset,
-                    endOffset = endOffset,
-                    text = text.substring(startOffset, endOffset)
+        for (para in paragraphs) {
+            val paint = if (para.isTitle) titlePaint else bodyPaint
+            val layout = StaticLayout.Builder
+                .obtain(para.text, 0, para.text.length, paint, widthPx)
+                .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                .setLineSpacing(0f, lineHeightMultiplier)
+                .setIncludePad(false)
+                .build()
+
+            var sliceStartLine = 0
+            for (line in 0 until layout.lineCount) {
+                val lineHeight = (layout.getLineBottom(line) - layout.getLineTop(line)).toFloat()
+                if (currentY > 0f && currentY + lineHeight > heightPx) {
+                    if (line > sliceStartLine) {
+                        val s = layout.getLineStart(sliceStartLine)
+                        val e = layout.getLineStart(line)
+                        currentSlices.add(PageSlice(para.text.substring(s, e).trimEnd('\n'), para.isTitle, hasBottomGap = false))
+                        flushPage(para.charStartOffset + e)
+                        pageStartOffset = para.charStartOffset + e
+                        sliceStartLine = line
+                    } else {
+                        flushPage(para.charStartOffset + layout.getLineStart(line))
+                        pageStartOffset = para.charStartOffset + layout.getLineStart(line)
+                    }
+                }
+                currentY += lineHeight
+            }
+
+            if (sliceStartLine < layout.lineCount) {
+                val s = layout.getLineStart(sliceStartLine)
+                val e = para.text.length
+                val extraGap = if (para.isTitle) maxOf(paragraphSpacingPx, textSizePx * 0.55f) else paragraphSpacingPx
+                val fitsGap = currentY + extraGap <= heightPx
+                currentSlices.add(
+                    PageSlice(
+                        text = para.text.substring(s, e).trimEnd('\n'),
+                        isTitle = para.isTitle,
+                        hasBottomGap = fitsGap
+                    )
                 )
-            )
+                if (fitsGap) {
+                    currentY += extraGap
+                } else {
+                    flushPage(para.charStartOffset + e)
+                    pageStartOffset = para.charStartOffset + e
+                }
+            }
         }
 
-        return pages.ifEmpty { listOf(ReaderPage(0, 0, text.length, text)) }
+        if (currentSlices.isNotEmpty()) {
+            val lastPara = paragraphs.last()
+            flushPage(lastPara.charStartOffset + lastPara.text.length)
+        }
+
+        return pages.ifEmpty { listOf(ReaderPage(0, 0, 0, emptyList())) }
     }
 }

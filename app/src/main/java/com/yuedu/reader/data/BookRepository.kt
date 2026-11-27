@@ -25,6 +25,8 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 
@@ -52,10 +54,31 @@ class BookRepository(private val context: Context) {
 
     suspend fun initialize() = withContext(Dispatchers.IO) {
         ioMutex.withLock {
-            _settings.value = readSettingsLocked()
+            val loadedSettings = readSettingsLocked()
+            val normalizedFontId = if (loadedSettings.selectedFontId == "builtin_serif") {
+                ReaderSettings.BUILTIN_SYSTEM_SANS
+            } else {
+                loadedSettings.selectedFontId
+            }
+            _settings.value = loadedSettings.copy(selectedFontId = normalizedFontId)
+
             _fonts.value = builtInFonts() + readCustomFontsLocked()
-            val loadedBooks = readBooksLocked()
+
+            var booksChanged = false
+            val loadedBooks = readBooksLocked().map { book ->
+                val repairedTitle = repairMojibakeIfNeeded(book.title)
+                val repairedName = repairMojibakeIfNeeded(book.originalFileName)
+                if (repairedTitle != book.title || repairedName != book.originalFileName) {
+                    booksChanged = true
+                    book.copy(title = repairedTitle, originalFileName = repairedName)
+                } else {
+                    book
+                }
+            }
             _books.value = loadedBooks
+            if (booksChanged) {
+                writeBooksLocked(loadedBooks)
+            }
 
             if (loadedBooks.isEmpty() && !seedFlagFile.exists()) {
                 seedFlagFile.createNewFile()
@@ -72,7 +95,7 @@ class BookRepository(private val context: Context) {
     }
 
     suspend fun importBookFromUri(uri: Uri): BookItem = withContext(Dispatchers.IO) {
-        val fileName = queryDisplayName(uri) ?: "未命名书籍.txt"
+        val fileName = repairMojibakeIfNeeded(queryDisplayName(uri) ?: "未命名书籍.txt")
         val size = queryFileSize(uri)
         ioMutex.withLock {
             val item = importBookFromStreamLocked(
@@ -92,9 +115,10 @@ class BookRepository(private val context: Context) {
 
     suspend fun importBookFromTempFile(tempFile: File, originalFileName: String): BookItem =
         withContext(Dispatchers.IO) {
+            val safeFileName = repairMojibakeIfNeeded(originalFileName)
             ioMutex.withLock {
                 val item = importBookFromStreamLocked(
-                    originalFileName = originalFileName,
+                    originalFileName = safeFileName,
                     fileSize = tempFile.length(),
                     streamFactory = { FileInputStream(tempFile) }
                 )
@@ -116,7 +140,7 @@ class BookRepository(private val context: Context) {
         val chaptersFile = File(chaptersDir, "$id.json")
         writeChaptersLocked(chaptersFile, result.chapters)
 
-        val cleanTitle = originalFileName
+        val cleanTitle = repairMojibakeIfNeeded(originalFileName)
             .substringAfterLast('/')
             .substringAfterLast('\\')
             .replace(Regex("""\.(txt|TXT)$"""), "")
@@ -136,8 +160,8 @@ class BookRepository(private val context: Context) {
     }
 
     suspend fun importFontFromUri(uri: Uri): CustomFont = withContext(Dispatchers.IO) {
-        val fileName = queryDisplayName(uri) ?: "custom_font.ttf"
-        val temp = File(context.cacheDir, "font_import_${System.currentTimeMillis()}_$fileName")
+        val fileName = repairMojibakeIfNeeded(queryDisplayName(uri) ?: "custom_font.ttf")
+        val temp = File(context.cacheDir, "font_import_${System.currentTimeMillis()}.tmp")
         try {
             context.contentResolver.openInputStream(uri)?.use { input ->
                 FileOutputStream(temp).use { output -> input.copyTo(output) }
@@ -150,7 +174,9 @@ class BookRepository(private val context: Context) {
 
     suspend fun importFontFromTempFile(tempFile: File, originalFileName: String): CustomFont =
         withContext(Dispatchers.IO) {
-            val cleanName = originalFileName.substringAfterLast('/').substringAfterLast('\\')
+            val cleanName = repairMojibakeIfNeeded(originalFileName)
+                .substringAfterLast('/')
+                .substringAfterLast('\\')
             val ext = cleanName.substringAfterLast('.', "ttf").lowercase()
             require(ext in listOf("ttf", "otf", "ttc")) { "仅支持 .ttf / .otf / .ttc 字体文件" }
 
@@ -158,7 +184,6 @@ class BookRepository(private val context: Context) {
             val destFile = File(fontsDir, "$id.$ext")
             tempFile.copyTo(destFile, overwrite = true)
 
-            // Validate font with Android Typeface
             val tf = try {
                 Typeface.createFromFile(destFile)
             } catch (e: Exception) {
@@ -185,23 +210,18 @@ class BookRepository(private val context: Context) {
         }
 
     fun getTypeface(fontId: String): Typeface {
-        return when (fontId) {
-            ReaderSettings.BUILTIN_SYSTEM_SANS -> Typeface.SANS_SERIF
-            ReaderSettings.BUILTIN_SYSTEM_SERIF -> Typeface.SERIF
-            else -> {
-                typefaceCache[fontId]?.let { return it }
-                val font = _fonts.value.find { it.id == fontId }
-                if (font != null && font.filePath.isNotBlank()) {
-                    val file = File(font.filePath)
-                    if (file.exists()) {
-                        return runCatching {
-                            Typeface.createFromFile(file).also { typefaceCache[fontId] = it }
-                        }.getOrDefault(Typeface.SANS_SERIF)
-                    }
-                }
-                Typeface.SANS_SERIF
+        if (fontId == ReaderSettings.BUILTIN_SYSTEM_SANS) return Typeface.SANS_SERIF
+        typefaceCache[fontId]?.let { return it }
+        val font = _fonts.value.find { it.id == fontId }
+        if (font != null && font.filePath.isNotBlank()) {
+            val file = File(font.filePath)
+            if (file.exists()) {
+                return runCatching {
+                    Typeface.createFromFile(file).also { typefaceCache[fontId] = it }
+                }.getOrDefault(Typeface.SANS_SERIF)
             }
         }
+        return Typeface.SANS_SERIF
     }
 
     suspend fun loadChapters(bookId: String): List<ChapterInfo> = withContext(Dispatchers.IO) {
@@ -223,9 +243,9 @@ class BookRepository(private val context: Context) {
         }
     }
 
-    suspend fun loadChapterText(book: BookItem, chapter: ChapterInfo): String =
+    suspend fun loadChapterParagraphs(book: BookItem, chapter: ChapterInfo): List<TxtBookEngine.ChapterParagraph> =
         withContext(Dispatchers.IO) {
-            TxtBookEngine.readChapterText(File(book.filePath), chapter)
+            TxtBookEngine.readChapterParagraphs(File(book.filePath), chapter)
         }
 
     suspend fun updateBookProgress(
@@ -248,6 +268,16 @@ class BookRepository(private val context: Context) {
                     item
                 }
             }
+            _books.value = updated
+            writeBooksLocked(updated)
+        }
+    }
+
+    suspend fun renameBook(bookId: String, newTitle: String) = withContext(Dispatchers.IO) {
+        val trimmed = newTitle.trim()
+        if (trimmed.isEmpty()) return@withContext
+        ioMutex.withLock {
+            val updated = _books.value.map { if (it.id == bookId) it.copy(title = trimmed) else it }
             _books.value = updated
             writeBooksLocked(updated)
         }
@@ -293,19 +323,31 @@ class BookRepository(private val context: Context) {
     private fun builtInFonts(): List<CustomFont> = listOf(
         CustomFont(
             id = ReaderSettings.BUILTIN_SYSTEM_SANS,
-            displayName = "系统无衬线 (默认)",
+            displayName = "系统默认",
             fileName = "System Sans",
-            filePath = "",
-            isBuiltIn = true
-        ),
-        CustomFont(
-            id = ReaderSettings.BUILTIN_SYSTEM_SERIF,
-            displayName = "系统衬线体 (书卷)",
-            fileName = "System Serif",
             filePath = "",
             isBuiltIn = true
         )
     )
+
+    companion object {
+        fun repairMojibakeIfNeeded(input: String): String {
+            if (input.isEmpty()) return input
+            val hasHighLatin1 = input.any { it.code in 0x80..0xFF }
+            val allLatin1 = input.all { it.code <= 0xFF }
+            if (!hasHighLatin1 || !allLatin1) return input
+
+            return try {
+                val rawBytes = input.toByteArray(StandardCharsets.ISO_8859_1)
+                val decoder = StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                decoder.decode(ByteBuffer.wrap(rawBytes)).toString()
+            } catch (_: Exception) {
+                input
+            }
+        }
+    }
 
     private fun queryDisplayName(uri: Uri): String? {
         context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
@@ -315,7 +357,7 @@ class BookRepository(private val context: Context) {
                     if (idx >= 0) return cursor.getString(idx)
                 }
             }
-        return uri.lastPathSegment
+        return uri.lastPathSegment?.let { Uri.decode(it) }
     }
 
     private fun queryFileSize(uri: Uri): Long {
@@ -411,8 +453,8 @@ class BookRepository(private val context: Context) {
                         add(
                             CustomFont(
                                 id = o.getString("id"),
-                                displayName = o.getString("displayName"),
-                                fileName = o.getString("fileName"),
+                                displayName = repairMojibakeIfNeeded(o.getString("displayName")),
+                                fileName = repairMojibakeIfNeeded(o.getString("fileName")),
                                 filePath = path,
                                 addedAt = o.optLong("addedAt", System.currentTimeMillis()),
                                 isBuiltIn = false
@@ -445,11 +487,12 @@ class BookRepository(private val context: Context) {
         return runCatching {
             val o = JSONObject(settingsMetaFile.readText(StandardCharsets.UTF_8))
             ReaderSettings(
-                fontSizeSp = o.optDouble("fontSizeSp", 19.0).toFloat(),
-                lineHeightMultiplier = o.optDouble("lineHeightMultiplier", 1.65).toFloat(),
-                horizontalPaddingDp = o.optDouble("horizontalPaddingDp", 22.0).toFloat(),
+                fontSizeSp = o.optDouble("fontSizeSp", 28.0).toFloat(),
+                lineHeightMultiplier = o.optDouble("lineHeightMultiplier", 1.3).toFloat(),
+                paragraphSpacingDp = o.optDouble("paragraphSpacingDp", 10.0).toFloat(),
+                horizontalPaddingDp = o.optDouble("horizontalPaddingDp", 20.0).toFloat(),
                 theme = ReaderTheme.fromId(o.optString("theme", "paper")),
-                readingMode = ReadingMode.fromId(o.optString("readingMode", "paged")),
+                readingMode = ReadingMode.fromId(o.optString("readingMode", "simulation")),
                 selectedFontId = o.optString("selectedFontId", ReaderSettings.BUILTIN_SYSTEM_SANS),
                 appAppearance = AppAppearance.fromId(o.optString("appAppearance", "system"))
             )
@@ -460,6 +503,7 @@ class BookRepository(private val context: Context) {
         val obj = JSONObject().apply {
             put("fontSizeSp", s.fontSizeSp.toDouble())
             put("lineHeightMultiplier", s.lineHeightMultiplier.toDouble())
+            put("paragraphSpacingDp", s.paragraphSpacingDp.toDouble())
             put("horizontalPaddingDp", s.horizontalPaddingDp.toDouble())
             put("theme", s.theme.id)
             put("readingMode", s.readingMode.id)
@@ -472,21 +516,19 @@ class BookRepository(private val context: Context) {
     private fun buildWelcomeGuideText(): String = """
         第一章 欢迎来到悦读
 
-        欢迎体验「悦读」第一版！这是一款专为纯文本阅读打造的极简阅读器，采用通透灵动的液态玻璃（Liquid Glass）视觉语言设计。
+        欢迎体验「悦读」！这是一款专为纯文本阅读打造的极简阅读器，融合了通透灵动的液态玻璃视觉与沉浸式纸书排版体验。
 
-        在这一版中，你可以完整体验以下核心功能：
-        1. 智能 TXT 排版：自动识别 UTF-8、GBK/GB18030、UTF-16 编码，告别乱码；自动识别中英文章节目录，大文件也能秒开。
-        2. 同 Wi-Fi 电脑传书：切换到底部「传书」标签，在电脑浏览器打开屏幕上的局域网地址，即可拖拽批量上传 TXT 小说与自定义字体。
-        3. 自定义字体导入：支持从手机本地或电脑 Wi-Fi 导入任意 .ttf / .otf / .ttc 字体文件，随时在阅读器内一键切换。
+        核心功能一览：
+        1. 智能 TXT 排版：自动识别多种中文编码，告别乱码；自动识别中英文章节目录，大文件也能秒开。
+        2. 同 Wi-Fi 电脑传书与传字体：切换到底部「传书」标签，在电脑浏览器打开局域网地址，即可拖拽批量上传 TXT 小说与自定义字体。
+        3. 自定义字体导入：支持本地选择或电脑 Wi-Fi 传入 .ttf / .otf / .ttc 字体文件。
 
-        第二章 阅读手势与个性化
+        第二章 阅读手势与统一设置
 
         在阅读界面中：
         • 点击屏幕左侧 1/3 区域向上翻页，点击右侧 1/3 区域向下翻页。
-        • 点击屏幕中央区域，可以唤出或收起悬浮液态玻璃控制栏。
-        • 支持「左右翻页」与「上下连续滚动」两种模式自由切换。
-        • 内置纯净白、暖羊皮、护眼青、深空黑四款阅读纸张主题，并支持字号、行距、页边距无级调节。
+        • 点击屏幕中央区域唤出菜单，点击「设置」即可在一个完整面板内滑动调节字号、行距、段距，并切换仿真翻页、平滑翻页或上下翻页。
 
-        祝你阅读愉快！现在就试着通过底部「传书」把你喜欢的小说和字体传到手机上吧。
+        祝你阅读愉快！
     """.trimIndent()
 }

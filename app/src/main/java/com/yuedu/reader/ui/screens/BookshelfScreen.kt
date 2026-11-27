@@ -35,6 +35,7 @@ import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -68,12 +69,14 @@ fun BookshelfScreen(
     onOpenBook: (BookItem) -> Unit,
     onImportLocalBook: () -> Unit,
     onGoWifiTransfer: () -> Unit,
+    onRenameBook: (BookItem, String) -> Unit,
     onDeleteBook: (BookItem) -> Unit
 ) {
     val glass = LocalLiquidGlass.current
     var query by remember { mutableStateOf("") }
     var isGridMode by remember { mutableStateOf(true) }
-    var pendingDelete by remember { mutableStateOf<BookItem?>(null) }
+    var actionBook by remember { mutableStateOf<BookItem?>(null) }
+    var renameText by remember { mutableStateOf("") }
 
     val filtered = remember(books, query) {
         val q = query.trim()
@@ -89,7 +92,6 @@ fun BookshelfScreen(
     ) {
         Spacer(modifier = Modifier.height(12.dp))
 
-        // iOS 27 Large Title + Floating Action Pills
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -104,7 +106,7 @@ fun BookshelfScreen(
                     letterSpacing = (-0.8).sp
                 )
                 Text(
-                    text = "${books.size} 本书籍 · 纯净 TXT 阅读",
+                    text = "${books.size} 本书籍",
                     color = glass.textSecondary,
                     fontSize = 13.sp
                 )
@@ -164,7 +166,6 @@ fun BookshelfScreen(
 
         Spacer(modifier = Modifier.height(14.dp))
 
-        // Liquid Glass Search Capsule
         LiquidGlassSurface(
             modifier = Modifier
                 .fillMaxWidth()
@@ -188,7 +189,7 @@ fun BookshelfScreen(
                 Box(modifier = Modifier.weight(1f)) {
                     if (query.isEmpty()) {
                         Text(
-                            text = "搜索书架中的 TXT 书籍...",
+                            text = "搜索书架中的书籍...",
                             color = glass.textSecondary,
                             fontSize = 14.sp
                         )
@@ -268,13 +269,19 @@ fun BookshelfScreen(
                         GridBookCard(
                             book = book,
                             onClick = { onOpenBook(book) },
-                            onLongClick = { pendingDelete = book }
+                            onLongClick = {
+                                renameText = book.title
+                                actionBook = book
+                            }
                         )
                     } else {
                         ListBookCard(
                             book = book,
                             onClick = { onOpenBook(book) },
-                            onDeleteClick = { pendingDelete = book }
+                            onDeleteClick = {
+                                renameText = book.title
+                                actionBook = book
+                            }
                         )
                     }
                 }
@@ -282,24 +289,44 @@ fun BookshelfScreen(
         }
     }
 
-    pendingDelete?.let { book ->
+    actionBook?.let { book ->
         AlertDialog(
-            onDismissRequest = { pendingDelete = null },
-            title = { Text("移出书架") },
-            text = { Text("确定要删除《${book.title}》吗？将同时清除本应用内保存的书籍副本与进度。") },
+            onDismissRequest = { actionBook = null },
+            title = { Text("书籍管理") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("可修改书名或将其移出书架：", fontSize = 13.sp)
+                    OutlinedTextField(
+                        value = renameText,
+                        onValueChange = { renameText = it },
+                        singleLine = true,
+                        label = { Text("书名") }
+                    )
+                }
+            },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        onDeleteBook(book)
-                        pendingDelete = null
+                        onRenameBook(book, renameText)
+                        actionBook = null
                     }
                 ) {
-                    Text("删除", color = glass.danger, fontWeight = FontWeight.SemiBold)
+                    Text("保存书名", fontWeight = FontWeight.SemiBold)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { pendingDelete = null }) {
-                    Text("取消")
+                Row {
+                    TextButton(
+                        onClick = {
+                            onDeleteBook(book)
+                            actionBook = null
+                        }
+                    ) {
+                        Text("删除书籍", color = glass.danger, fontWeight = FontWeight.SemiBold)
+                    }
+                    TextButton(onClick = { actionBook = null }) {
+                        Text("取消")
+                    }
                 }
             }
         )
@@ -325,7 +352,6 @@ private fun GridBookCard(
         elevation = 10.dp
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
-            // Book Cover Tile with Spine Highlight
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -333,7 +359,6 @@ private fun GridBookCard(
                     .clip(RoundedCornerShape(16.dp))
                     .background(Brush.linearGradient(listOf(c1, c2)))
             ) {
-                // Spine sheen
                 Box(
                     modifier = Modifier
                         .width(12.dp)
@@ -357,7 +382,7 @@ private fun GridBookCard(
                             .padding(horizontal = 8.dp, vertical = 3.dp)
                     ) {
                         Text(
-                            text = "TXT · ${book.detectedEncoding}",
+                            text = "TXT",
                             color = Color.White,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.SemiBold
@@ -509,7 +534,7 @@ private fun ListBookCard(
             ) {
                 Icon(
                     imageVector = Icons.Rounded.DeleteOutline,
-                    contentDescription = "删除",
+                    contentDescription = "管理",
                     tint = glass.textSecondary,
                     modifier = Modifier.size(18.dp)
                 )

@@ -49,25 +49,25 @@ enum class ReaderTheme(
         label = "纯净白",
         backgroundColor = Color(0xFFFBFBFD),
         textColor = Color(0xFF1D1D1F),
-        secondaryTextColor = Color(0xFF6E6E73),
+        secondaryTextColor = Color(0xFF7A7A80),
         accentColor = Color(0xFF007AFF),
         isDark = false
     ),
     SEPIA(
         id = "sepia",
         label = "暖羊皮",
-        backgroundColor = Color(0xFFF6EFE2),
+        backgroundColor = Color(0xFFF5ECD9),
         textColor = Color(0xFF3A2F23),
-        secondaryTextColor = Color(0xFF7E6E5B),
+        secondaryTextColor = Color(0xFF847461),
         accentColor = Color(0xFFC96B2C),
         isDark = false
     ),
     SAGE(
         id = "sage",
         label = "护眼青",
-        backgroundColor = Color(0xFFE7F0E8),
+        backgroundColor = Color(0xFFE5EFE6),
         textColor = Color(0xFF1E3224),
-        secondaryTextColor = Color(0xFF56705D),
+        secondaryTextColor = Color(0xFF5D7664),
         accentColor = Color(0xFF248A5A),
         isDark = false
     ),
@@ -75,8 +75,8 @@ enum class ReaderTheme(
         id = "midnight",
         label = "深空黑",
         backgroundColor = Color(0xFF0E1015),
-        textColor = Color(0xFFDDE2EB),
-        secondaryTextColor = Color(0xFF8A92A0),
+        textColor = Color(0xFFD6DCE6),
+        secondaryTextColor = Color(0xFF7D8594),
         accentColor = Color(0xFF4DA3FF),
         isDark = true
     );
@@ -87,18 +87,26 @@ enum class ReaderTheme(
 }
 
 enum class ReadingMode(val id: String, val label: String) {
-    PAGED_HORIZONTAL("paged", "左右翻页"),
-    SCROLL_VERTICAL("scroll", "上下滚动");
+    SIMULATION("simulation", "仿真翻页"),
+    SMOOTH("smooth", "平滑翻页"),
+    VERTICAL("vertical", "上下翻页");
 
     companion object {
-        fun fromId(id: String): ReadingMode = entries.find { it.id == id } ?: PAGED_HORIZONTAL
+        fun fromId(id: String): ReadingMode {
+            return when (id) {
+                "simulation" -> SIMULATION
+                "smooth", "paged" -> SMOOTH
+                "vertical", "scroll" -> VERTICAL
+                else -> SIMULATION
+            }
+        }
     }
 }
 
 enum class AppAppearance(val id: String, val label: String) {
     SYSTEM("system", "跟随系统"),
-    LIGHT("light", "浅色玻璃"),
-    DARK("dark", "深邃暗夜");
+    LIGHT("light", "浅色"),
+    DARK("dark", "深色");
 
     companion object {
         fun fromId(id: String): AppAppearance = entries.find { it.id == id } ?: SYSTEM
@@ -106,25 +114,31 @@ enum class AppAppearance(val id: String, val label: String) {
 }
 
 data class ReaderSettings(
-    val fontSizeSp: Float = 19f,
-    val lineHeightMultiplier: Float = 1.65f,
-    val horizontalPaddingDp: Float = 22f,
+    val fontSizeSp: Float = 28f,
+    val lineHeightMultiplier: Float = 1.3f,
+    val paragraphSpacingDp: Float = 10f,
+    val horizontalPaddingDp: Float = 20f,
     val theme: ReaderTheme = ReaderTheme.PAPER,
-    val readingMode: ReadingMode = ReadingMode.PAGED_HORIZONTAL,
+    val readingMode: ReadingMode = ReadingMode.SIMULATION,
     val selectedFontId: String = BUILTIN_SYSTEM_SANS,
     val appAppearance: AppAppearance = AppAppearance.SYSTEM
 ) {
     companion object {
         const val BUILTIN_SYSTEM_SANS = "builtin_sans"
-        const val BUILTIN_SYSTEM_SERIF = "builtin_serif"
     }
 }
+
+data class PageSlice(
+    val text: String,
+    val isTitle: Boolean,
+    val hasBottomGap: Boolean
+)
 
 data class ReaderPage(
     val pageIndex: Int,
     val startOffset: Int,
     val endOffset: Int,
-    val text: String
+    val slices: List<PageSlice>
 )
 
 data class WifiTransferLog(

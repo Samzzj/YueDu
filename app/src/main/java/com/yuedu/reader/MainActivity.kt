@@ -151,7 +151,7 @@ fun YueDuApp(
                 fonts = fonts,
                 resolveTypeface = { repository.getTypeface(it) },
                 loadChapters = { repository.loadChapters(it) },
-                loadChapterText = { b, ch -> repository.loadChapterText(b, ch) },
+                loadChapterParagraphs = { b, ch -> repository.loadChapterParagraphs(b, ch) },
                 onSaveProgress = { bookId, chIdx, offset, prog ->
                     scope.launch {
                         repository.updateBookProgress(bookId, chIdx, offset, prog)
@@ -160,6 +160,10 @@ fun YueDuApp(
                 onUpdateSettings = { transform ->
                     scope.launch { repository.updateSettings(transform) }
                 },
+                onGoImportFonts = {
+                    activeBookId = null
+                    selectedTab = 2
+                },
                 onExit = { activeBookId = null }
             )
         } else {
@@ -167,7 +171,7 @@ fun YueDuApp(
                 listOf(
                     GlassTabItem("书架", Icons.Rounded.AutoStories),
                     GlassTabItem("传书", Icons.Rounded.Wifi),
-                    GlassTabItem("字体", Icons.Rounded.Tune)
+                    GlassTabItem("字体设置", Icons.Rounded.Tune)
                 )
             }
 
@@ -183,6 +187,9 @@ fun YueDuApp(
                             onOpenBook = { activeBookId = it.id },
                             onImportLocalBook = { bookPickerLauncher.launch(arrayOf("text/plain", "*/*")) },
                             onGoWifiTransfer = { selectedTab = 1 },
+                            onRenameBook = { book, newTitle ->
+                                scope.launch { repository.renameBook(book.id, newTitle) }
+                            },
                             onDeleteBook = { book ->
                                 scope.launch { repository.deleteBook(book.id) }
                             }
@@ -209,8 +216,19 @@ fun YueDuApp(
                         else -> FontsSettingsScreen(
                             fonts = fonts,
                             settings = settings,
+                            isWifiRunning = isServerRunning,
+                            wifiServerUrl = serverUrl,
                             resolveTypeface = { repository.getTypeface(it) },
                             onImportLocalFont = { fontPickerLauncher.launch(arrayOf("*/*")) },
+                            onStartWifiForFont = {
+                                if (!isServerRunning) {
+                                    wifiServer.start().onFailure {
+                                        Toast.makeText(context, it.message ?: "Wi-Fi 服务启动失败", Toast.LENGTH_SHORT).show()
+                                    }
+                                } else {
+                                    wifiServer.refreshUrl()
+                                }
+                            },
                             onSelectFont = { fontId ->
                                 scope.launch { repository.updateSettings { it.copy(selectedFontId = fontId) } }
                             },
