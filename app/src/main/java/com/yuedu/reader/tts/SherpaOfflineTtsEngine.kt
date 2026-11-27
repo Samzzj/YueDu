@@ -214,7 +214,7 @@ class SherpaOfflineTtsEngine(private val context: Context) {
             val parts = s.split('.', limit = 2)
             val intPart = integerToChinese(parts[0])
             if (parts.size < 2 || parts[1].isEmpty()) return intPart
-            return "$intPart点${digitsOnlyToChinese(parts[1])}"
+            return "${intPart}点${digitsOnlyToChinese(parts[1])}"
         }
 
         private fun integerToChinese(raw: String): String {
@@ -226,13 +226,13 @@ class SherpaOfflineTtsEngine(private val context: Context) {
                 val yi = value / 100_000_000L
                 val rem = value % 100_000_000L
                 val head = "${integerToChinese(yi.toString())}亿"
-                return if (rem == 0L) head else if (rem < 10_000_000L) "$head零${integerToChinese(rem.toString())}" else "$head${integerToChinese(rem.toString())}"
+                return if (rem == 0L) head else if (rem < 10_000_000L) "${head}零${integerToChinese(rem.toString())}" else "$head${integerToChinese(rem.toString())}"
             }
             if (value >= 10_000L) {
                 val wan = value / 10_000L
                 val rem = value % 10_000L
                 val head = "${integerToChinese(wan.toString())}万"
-                return if (rem == 0L) head else if (rem < 1_000L) "$head零${integerToChinese(rem.toString())}" else "$head${integerToChinese(rem.toString())}"
+                return if (rem == 0L) head else if (rem < 1_000L) "${head}零${integerToChinese(rem.toString())}" else "$head${integerToChinese(rem.toString())}"
             }
             val n = value.toInt()
             val qian = n / 1000
