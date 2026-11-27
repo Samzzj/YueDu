@@ -74,27 +74,26 @@ jobs:
 
       - name: Rename and Verify APK
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk YueDu-v0.8.1-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk YueDu-v0.8.2-debug.apk
           APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n1)
-          "$APKSIGNER" verify --print-certs YueDu-v0.8.1-debug.apk
+          "$APKSIGNER" verify --print-certs YueDu-v0.8.2-debug.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: YueDu-v0.8.1-debug-apk
-          path: YueDu-v0.8.1-debug.apk
+          name: YueDu-v0.8.2-debug-apk
+          path: YueDu-v0.8.2-debug.apk
 
-      - name: Publish v0.8.1 Release
+      - name: Publish v0.8.2 Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.8.1-preview
-          name: 悦读 YueDu v0.8.1
+          tag_name: v0.8.2-preview
+          name: 悦读 YueDu v0.8.2
           body: |
-            悦读 YueDu v0.8.1 更新内容：
-            - 优化 AI 朗读连续短段落（对话流）断句与合并策略，大幅减少频繁建连造成的段落停顿卡顿
-            - 新增跨章节提前预加载缓存（朗读至章末前 4 句时提前合成下一章开头），实现换章无缝衔接
-            - 收紧单句在线合成超时并加入单句容错，避免偶发空音频或单次网络抖动触发离线大模型冷加载卡顿
-          files: YueDu-v0.8.1-debug.apk
+            悦读 YueDu v0.8.2 更新内容：
+            - 修复「小贝」未下载离线包走在线试听/朗读时因微软下线 XiaohanNeural 导致的失败问题
+            - 包含 v0.8.1 的全部朗读流畅度修复（短对话段落合并、跨章节提前预加载、单句容错不轻易触发离线冷加载）
+          files: YueDu-v0.8.2-debug.apk
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

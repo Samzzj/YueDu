@@ -113,7 +113,7 @@ object EdgeNeuralTtsEngine {
         ),
         TtsVoiceOption(
             id = "matcha:baker",
-            engineVoiceName = "zh-CN-XiaohanNeural",
+            engineVoiceName = "zh-CN-XiaoxiaoNeural",
             displayLabel = "小贝",
             styleTag = "温润自然 · 广播级女声旁白",
             isNeural = true,
