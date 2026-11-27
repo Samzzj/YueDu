@@ -1,6 +1,7 @@
 package com.yuedu.reader.tts
 
 import android.content.Context
+import android.media.MediaPlayer
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
@@ -9,15 +10,20 @@ import com.yuedu.reader.engine.TxtBookEngine
 import com.yuedu.reader.model.TtsSentence
 import com.yuedu.reader.model.TtsSettings
 import com.yuedu.reader.model.TtsVoiceOption
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.Locale
 
 class LocalTtsManager(context: Context) {
@@ -25,17 +31,21 @@ class LocalTtsManager(context: Context) {
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
-    private var tts: TextToSpeech? = null
-    private var voicesMap: Map<String, Voice> = emptyMap()
+    private var localTts: TextToSpeech? = null
+    private var localVoicesById: Map<String, Voice> = emptyMap()
+
+    private var mediaPlayer: MediaPlayer? = null
+    private var edgePlayJob: Job? = null
+    private var previewJob: Job? = null
+    private var sleepJob: Job? = null
 
     private var currentSentences: List<TtsSentence> = emptyList()
     private var currentIndex: Int = 0
     private var currentSettings: TtsSettings = TtsSettings()
     private var onChapterFinishedCallback: (() -> Unit)? = null
-    private var sleepJob: Job? = null
-    private var suppressNextDone: Boolean = false
+    private var suppressNextLocalDone: Boolean = false
 
-    private val _isReady = MutableStateFlow(false)
+    private val _isReady = MutableStateFlow(true)
     val isReady: StateFlow<Boolean> = _isReady.asStateFlow()
 
     private val _isPlaying = MutableStateFlow(false)
@@ -44,7 +54,7 @@ class LocalTtsManager(context: Context) {
     private val _isPaused = MutableStateFlow(false)
     val isPaused: StateFlow<Boolean> = _isPaused.asStateFlow()
 
-    private val _availableVoices = MutableStateFlow<List<TtsVoiceOption>>(emptyList())
+    private val _availableVoices = MutableStateFlow<List<TtsVoiceOption>>(EdgeNeuralTtsEngine.neuralVoices)
     val availableVoices: StateFlow<List<TtsVoiceOption>> = _availableVoices.asStateFlow()
 
     private val _activeSentence = MutableStateFlow<TtsSentence?>(null)
@@ -57,73 +67,63 @@ class LocalTtsManager(context: Context) {
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
     init {
-        initEngine()
+        initLocalEngine()
     }
 
-    private fun initEngine() {
-        tts = TextToSpeech(appContext) { status ->
+    private fun initLocalEngine() {
+        localTts = TextToSpeech(appContext) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                val engine = tts ?: return@TextToSpeech
+                val engine = localTts ?: return@TextToSpeech
                 val langRes = engine.setLanguage(Locale.SIMPLIFIED_CHINESE)
                 if (langRes == TextToSpeech.LANG_MISSING_DATA || langRes == TextToSpeech.LANG_NOT_SUPPORTED) {
                     engine.setLanguage(Locale.CHINESE)
                 }
                 refreshVoices(engine)
-                setupListener(engine)
-                _isReady.value = true
-                _errorMessage.value = null
-            } else {
-                _isReady.value = false
-                _errorMessage.value = "系统本地 TTS 引擎初始化失败，请检查系统「文字转语音」设置"
+                setupLocalListener(engine)
             }
         }
     }
 
+    /**
+     * Combines expressive neural voices with strictly deduplicated Simplified Chinese local voices.
+     * Never shows redundant regional labels (简中/繁中) or duplicate voice entries.
+     */
     private fun refreshVoices(engine: TextToSpeech) {
         val rawVoices = runCatching { engine.voices?.toList().orEmpty() }.getOrDefault(emptyList())
-        val filtered = rawVoices
-            .filter { v ->
-                val lang = v.locale?.language?.lowercase().orEmpty()
-                lang == "zh" || lang == "cmn" || lang == "yue" || lang == "en"
-            }
-            .sortedWith(
-                compareBy<Voice>(
-                    { if (it.locale?.language?.lowercase() == "zh") 0 else 1 },
-                    { if (!it.isNetworkConnectionRequired) 0 else 1 },
-                    { it.name }
+        val simplifiedOnly = rawVoices.filter { v ->
+            val lang = v.locale?.language?.lowercase().orEmpty()
+            val country = v.locale?.country?.uppercase().orEmpty()
+            (lang == "zh" || lang == "cmn") && (country.isEmpty() || country == "CN" || country == "CHS")
+        }
+
+        // Deduplicate by normalized name + offline status so OEM duplicate entries collapse cleanly
+        val seenKeys = HashSet<String>()
+        val dedupedLocal = mutableListOf<Pair<String, Voice>>()
+        val localOptions = mutableListOf<TtsVoiceOption>()
+
+        for (v in simplifiedOnly) {
+            val rawKey = "${v.name.lowercase()}_${v.isNetworkConnectionRequired}"
+            if (!seenKeys.add(rawKey)) continue
+            val idx = localOptions.size + 1
+            val uniqueId = "local_${idx}_${v.name.ifBlank { "default" }}"
+            dedupedLocal.add(uniqueId to v)
+            localOptions.add(
+                TtsVoiceOption(
+                    id = uniqueId,
+                    engineVoiceName = v.name,
+                    displayLabel = "本机离线音色 $idx",
+                    styleTag = if (v.isNetworkConnectionRequired) "系统音色 · 需联网" else "系统本地 · 无网可用",
+                    isNeural = false
                 )
             )
-
-        voicesMap = filtered.associateBy { it.name }
-        val options = filtered.mapIndexed { idx, v ->
-            val langTag = v.locale?.displayName ?: v.locale?.toLanguageTag().orEmpty()
-            val offlineTag = if (v.isNetworkConnectionRequired) "在线" else "本地离线"
-            val shortName = friendlyVoiceLabel(v.name, idx + 1)
-            TtsVoiceOption(
-                name = v.name,
-                displayLabel = shortName,
-                localeLabel = "$langTag · $offlineTag",
-                isOffline = !v.isNetworkConnectionRequired
-            )
+            if (localOptions.size >= 4) break
         }
-        _availableVoices.value = options
+
+        localVoicesById = dedupedLocal.toMap()
+        _availableVoices.value = EdgeNeuralTtsEngine.neuralVoices + localOptions
     }
 
-    private fun friendlyVoiceLabel(rawName: String, index: Int): String {
-        val lower = rawName.lowercase()
-        return when {
-            lower.contains("xiaoxiao") -> "晓晓（自然女声）"
-            lower.contains("yunxi") -> "云希（清朗男声）"
-            lower.contains("yunjian") -> "云健（沉稳男声）"
-            lower.contains("xiaoyi") -> "晓伊（温柔女声）"
-            lower.contains("female") || lower.contains("-f-") || lower.endsWith("f") -> "本地女声 $index"
-            lower.contains("male") || lower.contains("-m-") || lower.endsWith("m") -> "本地男声 $index"
-            lower.contains("local") -> "系统本地音色 $index"
-            else -> "系统音色 $index (${rawName.takeLast(8)})"
-        }
-    }
-
-    private fun setupListener(engine: TextToSpeech) {
+    private fun setupLocalListener(engine: TextToSpeech) {
         engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {
                 if (utteranceId == "preview") return
@@ -137,37 +137,37 @@ class LocalTtsManager(context: Context) {
             override fun onDone(utteranceId: String?) {
                 if (utteranceId == "preview") return
                 scope.launch {
-                    if (suppressNextDone) {
-                        suppressNextDone = false
+                    if (suppressNextLocalDone) {
+                        suppressNextLocalDone = false
                         return@launch
                     }
                     if (!_isPlaying.value || _isPaused.value) return@launch
-                    val next = currentIndex + 1
-                    if (next < currentSentences.size) {
-                        speakCurrent(next)
-                    } else {
-                        if (currentSettings.sleepTimerMinutes == -1) {
-                            stop()
-                        } else {
-                            onChapterFinishedCallback?.invoke()
-                        }
-                    }
+                    advanceToNextSentence()
                 }
             }
 
             @Deprecated("Deprecated in Java")
             override fun onError(utteranceId: String?) {
+                if (utteranceId == "preview") return
                 scope.launch {
                     if (!_isPlaying.value || _isPaused.value) return@launch
-                    val next = currentIndex + 1
-                    if (next < currentSentences.size) {
-                        speakCurrent(next)
-                    } else {
-                        stop()
-                    }
+                    advanceToNextSentence()
                 }
             }
         })
+    }
+
+    private fun advanceToNextSentence() {
+        val next = currentIndex + 1
+        if (next < currentSentences.size) {
+            speakFromIndex(next)
+        } else {
+            if (currentSettings.sleepTimerMinutes == -1) {
+                stop()
+            } else {
+                onChapterFinishedCallback?.invoke()
+            }
+        }
     }
 
     fun startReading(
@@ -176,11 +176,10 @@ class LocalTtsManager(context: Context) {
         settings: TtsSettings,
         onChapterCompleted: () -> Unit
     ) {
-        if (!_isReady.value) {
-            _errorMessage.value = "本地语音引擎尚未就绪，请稍候重试"
-            return
-        }
         if (sentences.isEmpty()) return
+        previewJob?.cancel()
+        edgePlayJob?.cancel()
+        releaseMediaPlayer()
 
         currentSentences = sentences
         currentIndex = startIndex.coerceIn(0, sentences.lastIndex)
@@ -188,10 +187,10 @@ class LocalTtsManager(context: Context) {
         onChapterFinishedCallback = onChapterCompleted
         _isPlaying.value = true
         _isPaused.value = false
+        _errorMessage.value = null
 
         startSleepTimerIfNeeded(settings.sleepTimerMinutes)
-        applyTtsParameters(settings)
-        speakCurrent(currentIndex)
+        speakFromIndex(currentIndex)
     }
 
     fun continueNextChapter(sentences: List<TtsSentence>) {
@@ -199,86 +198,215 @@ class LocalTtsManager(context: Context) {
         currentSentences = sentences
         currentIndex = 0
         _isPaused.value = false
-        applyTtsParameters(currentSettings)
-        speakCurrent(0)
+        speakFromIndex(0)
     }
 
     fun pause() {
         if (!_isPlaying.value) return
         _isPaused.value = true
-        suppressNextDone = true
-        tts?.stop()
+        edgePlayJob?.cancel()
+        releaseMediaPlayer()
+        suppressNextLocalDone = true
+        localTts?.stop()
     }
 
     fun resume() {
         if (!_isPlaying.value || !_isPaused.value) return
         _isPaused.value = false
-        applyTtsParameters(currentSettings)
-        speakCurrent(currentIndex)
+        speakFromIndex(currentIndex)
     }
 
     fun stop() {
         sleepJob?.cancel()
         sleepJob = null
+        previewJob?.cancel()
+        edgePlayJob?.cancel()
+        releaseMediaPlayer()
         _sleepRemainingSeconds.value = 0
         _isPlaying.value = false
         _isPaused.value = false
         _activeSentence.value = null
-        suppressNextDone = true
-        tts?.stop()
+        suppressNextLocalDone = true
+        localTts?.stop()
     }
 
     fun updateLiveSettings(newSettings: TtsSettings) {
         val timerChanged = newSettings.sleepTimerMinutes != currentSettings.sleepTimerMinutes
         val audioChanged = newSettings.speechRate != currentSettings.speechRate ||
             newSettings.pitch != currentSettings.pitch ||
-            newSettings.voiceName != currentSettings.voiceName
+            newSettings.voiceId != currentSettings.voiceId
         currentSettings = newSettings
 
         if (timerChanged && _isPlaying.value) {
             startSleepTimerIfNeeded(newSettings.sleepTimerMinutes)
         }
 
-        if (audioChanged) {
-            applyTtsParameters(newSettings)
-            if (_isPlaying.value && !_isPaused.value && currentSentences.isNotEmpty()) {
-                suppressNextDone = true
-                speakCurrent(currentIndex)
-            }
+        if (audioChanged && _isPlaying.value && !_isPaused.value && currentSentences.isNotEmpty()) {
+            edgePlayJob?.cancel()
+            releaseMediaPlayer()
+            suppressNextLocalDone = true
+            localTts?.stop()
+            speakFromIndex(currentIndex)
         }
     }
 
     fun previewVoice(settings: TtsSettings) {
-        val engine = tts ?: return
-        if (!_isReady.value) return
-        applyTtsParameters(settings)
-        val params = Bundle()
-        engine.speak(
-            "你好，欢迎使用悦读本地语音朗读，当前语速为 ${String.format(Locale.US, "%.1f", settings.speechRate)} 倍。",
-            TextToSpeech.QUEUE_FLUSH,
-            params,
-            "preview"
-        )
-    }
+        val sampleText = "你好，欢迎来到悦读，现在为你朗读精彩小说。"
+        previewJob?.cancel()
+        releaseMediaPlayer()
+        suppressNextLocalDone = true
+        localTts?.stop()
 
-    private fun applyTtsParameters(settings: TtsSettings) {
-        val engine = tts ?: return
-        engine.setSpeechRate(settings.speechRate.coerceIn(0.5f, 2.5f))
-        engine.setPitch(settings.pitch.coerceIn(0.6f, 1.5f))
-        if (settings.voiceName.isNotBlank()) {
-            voicesMap[settings.voiceName]?.let { v ->
-                runCatching { engine.voice = v }
+        val selectedOption = _availableVoices.value.find { it.id == settings.voiceId }
+            ?: EdgeNeuralTtsEngine.neuralVoices.first()
+
+        if (selectedOption.isNeural) {
+            previewJob = scope.launch {
+                try {
+                    val mp3 = withContext(Dispatchers.IO) {
+                        EdgeNeuralTtsEngine.synthesizeToMp3Bytes(
+                            text = sampleText,
+                            voiceName = selectedOption.engineVoiceName,
+                            speechRate = settings.speechRate,
+                            pitch = settings.pitch
+                        )
+                    }
+                    playMp3Blocking(mp3, "preview")
+                } catch (_: CancellationException) {
+                    // Ignore
+                } catch (_: Exception) {
+                    speakLocally(sampleText, settings, "preview")
+                }
             }
+        } else {
+            speakLocally(sampleText, settings, "preview")
         }
     }
 
-    private fun speakCurrent(index: Int) {
-        val engine = tts ?: return
+    private fun speakFromIndex(startIdx: Int) {
+        val selectedOption = _availableVoices.value.find { it.id == currentSettings.voiceId }
+            ?: EdgeNeuralTtsEngine.neuralVoices.first()
+
+        if (selectedOption.isNeural) {
+            edgePlayJob?.cancel()
+            edgePlayJob = scope.launch {
+                var idx = startIdx
+                var prefetched: Deferred<ByteArray>? = null
+
+                while (idx < currentSentences.size && _isPlaying.value && !_isPaused.value) {
+                    val sentence = currentSentences[idx]
+                    currentIndex = idx
+                    _activeSentence.value = sentence
+
+                    val currentDeferred = prefetched ?: async(Dispatchers.IO) {
+                        EdgeNeuralTtsEngine.synthesizeToMp3Bytes(
+                            text = sentence.text,
+                            voiceName = selectedOption.engineVoiceName,
+                            speechRate = currentSettings.speechRate,
+                            pitch = currentSettings.pitch
+                        )
+                    }
+
+                    // Pre-fetch next sentence concurrently for gapless transition
+                    prefetched = if (idx + 1 < currentSentences.size) {
+                        val nextSentence = currentSentences[idx + 1]
+                        async(Dispatchers.IO) {
+                            EdgeNeuralTtsEngine.synthesizeToMp3Bytes(
+                                text = nextSentence.text,
+                                voiceName = selectedOption.engineVoiceName,
+                                speechRate = currentSettings.speechRate,
+                                pitch = currentSettings.pitch
+                            )
+                        }
+                    } else null
+
+                    try {
+                        val mp3Bytes = currentDeferred.await()
+                        if (!_isPlaying.value || _isPaused.value) break
+                        playMp3Blocking(mp3Bytes, "tts_$idx")
+                    } catch (ce: CancellationException) {
+                        prefetched?.cancel()
+                        throw ce
+                    } catch (_: Exception) {
+                        prefetched?.cancel()
+                        prefetched = null
+                        // Seamless fallback to local system TTS when offline or network fails
+                        speakSentenceLocallyFallback(idx)
+                        return@launch
+                    }
+
+                    if (!_isPlaying.value || _isPaused.value) break
+                    idx++
+                }
+
+                if (idx >= currentSentences.size && _isPlaying.value && !_isPaused.value) {
+                    if (currentSettings.sleepTimerMinutes == -1) {
+                        stop()
+                    } else {
+                        onChapterFinishedCallback?.invoke()
+                    }
+                }
+            }
+        } else {
+            speakSentenceLocallyFallback(startIdx)
+        }
+    }
+
+    private fun speakSentenceLocallyFallback(index: Int) {
         val sentence = currentSentences.getOrNull(index) ?: return
         currentIndex = index
         _activeSentence.value = sentence
-        val params = Bundle()
-        engine.speak(sentence.text, TextToSpeech.QUEUE_FLUSH, params, index.toString())
+        speakLocally(sentence.text, currentSettings, index.toString())
+    }
+
+    private fun speakLocally(text: String, settings: TtsSettings, utteranceId: String) {
+        val engine = localTts ?: return
+        engine.setSpeechRate(settings.speechRate.coerceIn(0.5f, 2.5f))
+        engine.setPitch(settings.pitch.coerceIn(0.6f, 1.5f))
+        localVoicesById[settings.voiceId]?.let { v ->
+            runCatching { engine.voice = v }
+        }
+        engine.speak(text, TextToSpeech.QUEUE_FLUSH, Bundle(), utteranceId)
+    }
+
+    private suspend fun playMp3Blocking(mp3Bytes: ByteArray, tag: String) {
+        val tempFile = withContext(Dispatchers.IO) {
+            File(appContext.cacheDir, "tts_audio_$tag.mp3").apply {
+                writeBytes(mp3Bytes)
+            }
+        }
+        try {
+            kotlinx.coroutines.suspendCancellableCoroutine<Unit> { cont ->
+                releaseMediaPlayer()
+                val mp = MediaPlayer()
+                mediaPlayer = mp
+                mp.setDataSource(tempFile.absolutePath)
+                mp.setOnPreparedListener { it.start() }
+                mp.setOnCompletionListener {
+                    releaseMediaPlayer()
+                    if (cont.isActive) cont.resumeWith(Result.success(Unit))
+                }
+                mp.setOnErrorListener { _, _, _ ->
+                    releaseMediaPlayer()
+                    if (cont.isActive) cont.resumeWith(Result.failure(IllegalStateException("音频播放失败")))
+                    true
+                }
+                mp.prepareAsync()
+                cont.invokeOnCancellation {
+                    releaseMediaPlayer()
+                }
+            }
+        } finally {
+            tempFile.delete()
+        }
+    }
+
+    private fun releaseMediaPlayer() {
+        runCatching {
+            mediaPlayer?.stop()
+            mediaPlayer?.release()
+        }
+        mediaPlayer = null
     }
 
     private fun startSleepTimerIfNeeded(minutes: Int) {
@@ -306,11 +434,14 @@ class LocalTtsManager(context: Context) {
 
     fun shutdown() {
         sleepJob?.cancel()
+        previewJob?.cancel()
+        edgePlayJob?.cancel()
+        releaseMediaPlayer()
         runCatching {
-            tts?.stop()
-            tts?.shutdown()
+            localTts?.stop()
+            localTts?.shutdown()
         }
-        tts = null
+        localTts = null
     }
 
     companion object {

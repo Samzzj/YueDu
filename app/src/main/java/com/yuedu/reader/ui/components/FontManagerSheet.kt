@@ -35,7 +35,6 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -101,13 +100,12 @@ fun FontManagerSheet(
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "支持本机导入、Wi-Fi 传字体及 10 款免费可商用中文字体一键下载",
+                    text = "支持本机导入、Wi-Fi 传字体及精选字体一键下载",
                     color = glass.textSecondary,
                     fontSize = 12.sp
                 )
             }
 
-            // Local & Wi-Fi Import Buttons
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -147,7 +145,6 @@ fun FontManagerSheet(
                 }
             }
 
-            // Live Preview Card
             item {
                 Column(
                     modifier = Modifier
@@ -168,7 +165,6 @@ fun FontManagerSheet(
                 }
             }
 
-            // Installed Fonts
             item {
                 Text(
                     text = "已安装字体 (${fonts.size})",
@@ -238,18 +234,17 @@ fun FontManagerSheet(
                 }
             }
 
-            // 10 Free Commercial-Use Fonts Catalog
             item {
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = "免费可商用字体库 (10款 · SIL OFL 1.1 开源授权)",
+                    text = "精选字体库 (${CommercialFontsCatalog.curatedFonts.size}款)",
                     color = glass.textPrimary,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold
                 )
             }
 
-            items(CommercialFontsCatalog.freeCommercialFonts, key = { it.id }) { item ->
+            items(CommercialFontsCatalog.curatedFonts, key = { it.id }) { item ->
                 val installedFont = fonts.find { it.catalogId == item.id }
                 val isSelected = installedFont != null && settings.selectedFontId == installedFont.id
                 val progress = downloadingProgress[item.id]
@@ -266,28 +261,12 @@ fun FontManagerSheet(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = item.displayName,
-                                    color = glass.textPrimary,
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Box(
-                                    modifier = Modifier
-                                        .clip(CircleShape)
-                                        .background(glass.success.copy(alpha = 0.14f))
-                                        .padding(horizontal = 7.dp, vertical = 2.dp)
-                                ) {
-                                    Text(
-                                        text = "免费商用",
-                                        color = glass.success,
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                }
-                            }
+                            Text(
+                                text = item.displayName,
+                                color = glass.textPrimary,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
                             Spacer(modifier = Modifier.height(3.dp))
                             Text(
                                 text = "${item.styleTag} · ${item.sizeLabel}",

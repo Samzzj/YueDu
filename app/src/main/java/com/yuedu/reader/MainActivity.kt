@@ -271,7 +271,6 @@ fun YueDuApp(
                         else -> AiReadingSettingsScreen(
                             ttsSettings = ttsSettings,
                             readerSettings = settings,
-                            isTtsReady = isTtsReady,
                             isTtsPlaying = isTtsPlaying,
                             isTtsPaused = isTtsPaused,
                             sleepRemainingSeconds = sleepRemainingSeconds,
@@ -283,7 +282,15 @@ fun YueDuApp(
                                     ttsManager.updateLiveSettings(next)
                                 }
                             },
-                            onPreviewVoice = { ttsManager.previewVoice(ttsSettings) },
+                            onSelectAndPreviewVoice = { voice ->
+                                scope.launch {
+                                    val next = repository.updateTtsSettings { it.copy(voiceId = voice.id) }
+                                    ttsManager.updateLiveSettings(next)
+                                    if (!isTtsPlaying) {
+                                        ttsManager.previewVoice(next)
+                                    }
+                                }
+                            },
                             onPauseResumeTts = {
                                 if (isTtsPaused) ttsManager.resume() else ttsManager.pause()
                             },

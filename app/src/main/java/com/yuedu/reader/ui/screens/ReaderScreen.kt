@@ -811,7 +811,7 @@ fun ReaderScreen(
             }
         }
 
-        // Compact Floating AI TTS Mini-Player when speaking (above footer)
+        // Enlarged Floating AI TTS Player Capsule when speaking (easy to tap)
         AnimatedVisibility(
             visible = isTtsPlaying && !showControls,
             enter = fadeIn() + slideInVertically { it },
@@ -819,82 +819,101 @@ fun ReaderScreen(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .windowInsetsPadding(WindowInsets.navigationBarsIgnoringVisibility)
-                .padding(bottom = 34.dp, start = 20.dp, end = 20.dp)
+                .padding(bottom = 36.dp, start = 16.dp, end = 16.dp)
         ) {
             Row(
                 modifier = Modifier
-                    .shadow(14.dp, CircleShape)
+                    .fillMaxWidth()
+                    .shadow(18.dp, CircleShape)
                     .clip(CircleShape)
                     .background(solidGlassBarBg)
                     .border(0.9.dp, solidGlassBorder, CircleShape)
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) {}
+                    .padding(horizontal = 18.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.GraphicEq,
-                    contentDescription = null,
-                    tint = settings.theme.accentColor,
-                    modifier = Modifier.size(18.dp)
-                )
-                Text(
-                    text = if (isTtsPaused) "已暂停" else "AI 朗读 ${String.format(Locale.US, "%.1fx", ttsSettings.speechRate)}",
-                    color = settings.theme.textColor,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-                if (sleepRemainingSeconds > 0) {
-                    Text(
-                        text = "${sleepRemainingSeconds / 60}m",
-                        color = settings.theme.accentColor,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                Box(
-                    modifier = Modifier
-                        .size(28.dp)
-                        .clip(CircleShape)
-                        .background(settings.theme.accentColor.copy(alpha = 0.14f))
-                        .clickable { onPauseResumeTts() },
-                    contentAlignment = Alignment.Center
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
                     Icon(
-                        imageVector = if (isTtsPaused) Icons.Rounded.PlayArrow else Icons.Rounded.Pause,
-                        contentDescription = "暂停/继续",
+                        imageVector = Icons.Rounded.GraphicEq,
+                        contentDescription = null,
                         tint = settings.theme.accentColor,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(22.dp)
                     )
+                    Column {
+                        Text(
+                            text = if (isTtsPaused) "朗读已暂停" else "AI 朗读中 · ${String.format(Locale.US, "%.1fx", ttsSettings.speechRate)}",
+                            color = settings.theme.textColor,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        if (sleepRemainingSeconds > 0) {
+                            Text(
+                                text = "定时剩余 ${sleepRemainingSeconds / 60}:${String.format(Locale.US, "%02d", sleepRemainingSeconds % 60)}",
+                                color = settings.theme.accentColor,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
                 }
-                Box(
-                    modifier = Modifier
-                        .size(28.dp)
-                        .clip(CircleShape)
-                        .background(settings.theme.textColor.copy(alpha = 0.08f))
-                        .clickable { onOpenAiSettingsTab() },
-                    contentAlignment = Alignment.Center
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Tune,
-                        contentDescription = "AI朗读设置",
-                        tint = settings.theme.textColor,
-                        modifier = Modifier.size(15.dp)
-                    )
-                }
-                Box(
-                    modifier = Modifier
-                        .size(28.dp)
-                        .clip(CircleShape)
-                        .background(Color(0x22FF3B30))
-                        .clickable { onStopTts() },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Stop,
-                        contentDescription = "停止",
-                        tint = Color(0xFFFF3B30),
-                        modifier = Modifier.size(15.dp)
-                    )
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(settings.theme.accentColor.copy(alpha = 0.16f))
+                            .clickable { onPauseResumeTts() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (isTtsPaused) Icons.Rounded.PlayArrow else Icons.Rounded.Pause,
+                            contentDescription = "暂停/继续",
+                            tint = settings.theme.accentColor,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(settings.theme.textColor.copy(alpha = 0.09f))
+                            .clickable { onOpenAiSettingsTab() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Tune,
+                            contentDescription = "AI朗读设置",
+                            tint = settings.theme.textColor,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(Color(0x22FF3B30))
+                            .clickable { onStopTts() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Stop,
+                            contentDescription = "停止",
+                            tint = Color(0xFFFF3B30),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
             }
         }
@@ -1273,7 +1292,7 @@ fun ReaderScreen(
                     ) {
                         Text("阅读字体", color = settings.theme.textColor, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                         Text(
-                            text = "免费字体库 / 导入",
+                            text = "精选字体库 / 导入",
                             color = settings.theme.accentColor,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,

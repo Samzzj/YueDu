@@ -388,7 +388,7 @@ fun BookshelfScreen(
                 ImportHubOption(
                     icon = Icons.Rounded.FontDownload,
                     title = "字体库与本地导入字体",
-                    subtitle = "10 款免费可商用字体一键下载 + 本机导入 .ttf/.otf",
+                    subtitle = "精选字体一键下载 + 本机导入 .ttf/.otf",
                     accent = glass.accent,
                     bg = cardBg,
                     textPrimary = glass.textPrimary,

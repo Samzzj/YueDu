@@ -17,16 +17,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Timer
+import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -52,14 +51,13 @@ import java.util.Locale
 fun AiReadingSettingsScreen(
     ttsSettings: TtsSettings,
     readerSettings: ReaderSettings,
-    isTtsReady: Boolean,
     isTtsPlaying: Boolean,
     isTtsPaused: Boolean,
     sleepRemainingSeconds: Int,
     availableVoices: List<TtsVoiceOption>,
     ttsError: String?,
     onUpdateTtsSettings: ((TtsSettings) -> TtsSettings) -> Unit,
-    onPreviewVoice: () -> Unit,
+    onSelectAndPreviewVoice: (TtsVoiceOption) -> Unit,
     onPauseResumeTts: () -> Unit,
     onStopTts: () -> Unit,
     onChangeAppearance: (AppAppearance) -> Unit
@@ -90,30 +88,27 @@ fun AiReadingSettingsScreen(
                     letterSpacing = (-0.8).sp
                 )
                 Text(
-                    text = "内置系统本地 TTS 离线朗读 · 无需云端导入",
+                    text = "拟真情感音色 + 本地离线兜底，点击音色即可直接试听",
                     color = glass.textSecondary,
                     fontSize = 13.sp
                 )
             }
         }
 
-        // Engine Status & Live Playback Control + Preview Card
-        item {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(cardBackground)
-                    .border(1.dp, cardBorder, RoundedCornerShape(20.dp))
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
+        // Active playback status bar (shown only when currently reading aloud)
+        if (isTtsPlaying || ttsError != null) {
+            item {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(cardBackground)
+                        .border(1.dp, cardBorder, RoundedCornerShape(20.dp))
+                        .padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                         Box(
                             modifier = Modifier
                                 .size(38.dp)
@@ -121,91 +116,58 @@ fun AiReadingSettingsScreen(
                                 .background(glass.accentSoft),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(
-                                imageVector = Icons.Rounded.GraphicEq,
-                                contentDescription = null,
-                                tint = glass.accent,
-                                modifier = Modifier.size(20.dp)
-                            )
+                            Icon(Icons.Rounded.GraphicEq, contentDescription = null, tint = glass.accent, modifier = Modifier.size(20.dp))
                         }
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
                             Text(
                                 text = when {
-                                    isTtsPlaying && !isTtsPaused -> "正在后台朗读中"
-                                    isTtsPlaying && isTtsPaused -> "朗读已暂停"
-                                    isTtsReady -> "本地 TTS 引擎已就绪"
-                                    else -> "正在初始化本地引擎..."
+                                    ttsError != null -> ttsError
+                                    isTtsPaused -> "朗读已暂停"
+                                    else -> "正在后台朗读中"
                                 },
-                                color = glass.textPrimary,
-                                fontSize = 15.sp,
+                                color = if (ttsError != null) glass.danger else glass.textPrimary,
+                                fontSize = 14.sp,
                                 fontWeight = FontWeight.SemiBold
                             )
-                            if (ttsError != null) {
-                                Text(text = ttsError, color = glass.danger, fontSize = 11.sp)
-                            } else if (sleepRemainingSeconds > 0) {
+                            if (sleepRemainingSeconds > 0) {
                                 val m = sleepRemainingSeconds / 60
                                 val s = sleepRemainingSeconds % 60
                                 Text(
-                                    text = "定时关闭倒计时 ${String.format(Locale.US, "%02d:%02d", m, s)}",
+                                    text = "定时关闭 ${String.format(Locale.US, "%02d:%02d", m, s)}",
                                     color = glass.accent,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium
-                                )
-                            } else {
-                                Text(
-                                    text = "打开任意书籍点击顶栏「听书」即可开始",
-                                    color = glass.textSecondary,
                                     fontSize = 12.sp
                                 )
                             }
                         }
                     }
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(42.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(glass.accent)
-                            .clickable(enabled = isTtsReady) { onPreviewVoice() },
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Rounded.RecordVoiceOver, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("试听当前音色", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                    }
 
                     if (isTtsPlaying) {
-                        Box(
-                            modifier = Modifier
-                                .size(42.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(subPillBg)
-                                .clickable { onPauseResumeTts() },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = if (isTtsPaused) Icons.Rounded.PlayArrow else Icons.Rounded.Pause,
-                                contentDescription = "暂停/继续",
-                                tint = glass.textPrimary
-                            )
-                        }
-                        Box(
-                            modifier = Modifier
-                                .size(42.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(subPillBg)
-                                .clickable { onStopTts() },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(Icons.Rounded.Stop, contentDescription = "停止", tint = glass.danger)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(subPillBg)
+                                    .clickable { onPauseResumeTts() },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = if (isTtsPaused) Icons.Rounded.PlayArrow else Icons.Rounded.Pause,
+                                    contentDescription = "暂停/继续",
+                                    tint = glass.textPrimary
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(subPillBg)
+                                    .clickable { onStopTts() },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Rounded.Stop, contentDescription = "停止", tint = glass.danger)
+                            }
                         }
                     }
                 }
@@ -411,7 +373,7 @@ fun AiReadingSettingsScreen(
             }
         }
 
-        // Local Voices Selector
+        // Voices Selector (Tap any voice to select & immediately preview!)
         item {
             Column(
                 modifier = Modifier
@@ -422,60 +384,70 @@ fun AiReadingSettingsScreen(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text(
-                    text = "音色设置 (系统本地音色)",
-                    color = glass.textPrimary,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-
-                val defaultSelected = ttsSettings.voiceName.isBlank()
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(if (defaultSelected) glass.accentSoft else subPillBg)
-                        .clickable { onUpdateTtsSettings { it.copy(voiceName = "") } }
-                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("系统默认中文音色", color = glass.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                        Text("自动匹配当前设备默认本地语音库", color = glass.textSecondary, fontSize = 11.sp)
-                    }
-                    if (defaultSelected) {
-                        Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = glass.accent, modifier = Modifier.size(20.dp))
-                    }
+                    Text(
+                        text = "音色选择",
+                        color = glass.textPrimary,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "点击音色即刻试听",
+                        color = glass.accent,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
+                    )
                 }
 
                 availableVoices.forEach { voice ->
-                    val selected = ttsSettings.voiceName == voice.name
+                    val selected = ttsSettings.voiceId == voice.id
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
                             .background(if (selected) glass.accentSoft else subPillBg)
-                            .clickable { onUpdateTtsSettings { it.copy(voiceName = voice.name) } }
-                            .padding(horizontal = 14.dp, vertical = 11.dp),
+                            .border(
+                                width = if (selected) 1.2.dp else 0.dp,
+                                color = if (selected) glass.accent else Color.Transparent,
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            .clickable { onSelectAndPreviewVoice(voice) }
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Icon(
+                            imageVector = Icons.Rounded.VolumeUp,
+                            contentDescription = null,
+                            tint = if (selected) glass.accent else glass.textSecondary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = voice.displayLabel,
                                 color = glass.textPrimary,
                                 fontSize = 14.sp,
-                                fontWeight = FontWeight.Medium,
+                                fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                text = voice.localeLabel,
+                                text = voice.styleTag,
                                 color = glass.textSecondary,
                                 fontSize = 11.sp
                             )
                         }
                         if (selected) {
-                            Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = glass.accent, modifier = Modifier.size(20.dp))
+                            Icon(
+                                Icons.Rounded.CheckCircle,
+                                contentDescription = "已选中",
+                                tint = glass.accent,
+                                modifier = Modifier.size(20.dp)
+                            )
                         }
                     }
                 }

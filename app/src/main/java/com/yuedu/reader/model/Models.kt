@@ -57,11 +57,10 @@ data class CustomFont(
 data class DownloadableFont(
     val id: String,
     val displayName: String,
-    val license: String,
     val styleTag: String,
     val sizeLabel: String,
     val fileName: String,
-    val downloadUrl: String
+    val downloadUrls: List<String>
 )
 
 enum class ReaderTheme(
@@ -160,17 +159,18 @@ data class ReaderSettings(
 data class TtsSettings(
     val speechRate: Float = 1.0f,
     val pitch: Float = 1.0f,
-    val voiceName: String = "",
+    val voiceId: String = "edge:zh-CN-XiaoxiaoNeural",
     val sleepTimerMinutes: Int = 0, // 0 = off, -1 = end of chapter, >0 = minutes
     val autoFollow: Boolean = true,
     val highlightSentence: Boolean = true
 )
 
 data class TtsVoiceOption(
-    val name: String,
+    val id: String,
+    val engineVoiceName: String,
     val displayLabel: String,
-    val localeLabel: String,
-    val isOffline: Boolean
+    val styleTag: String,
+    val isNeural: Boolean
 )
 
 data class TtsSentence(

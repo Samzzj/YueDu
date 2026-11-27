@@ -191,7 +191,7 @@ class BookRepository(private val context: Context) {
         }
         val temp = File(context.cacheDir, "font_dl_${catalogFont.id}.tmp")
         try {
-            CommercialFontsCatalog.downloadFontFile(catalogFont.downloadUrl, temp, onProgress)
+            CommercialFontsCatalog.downloadFontFromMirrors(catalogFont.downloadUrls, temp, onProgress)
             importFontFromTempFile(
                 tempFile = temp,
                 originalFileName = catalogFont.fileName,
@@ -641,7 +641,7 @@ class BookRepository(private val context: Context) {
             TtsSettings(
                 speechRate = o.optDouble("speechRate", 1.0).toFloat(),
                 pitch = o.optDouble("pitch", 1.0).toFloat(),
-                voiceName = o.optString("voiceName", ""),
+                voiceId = o.optString("voiceId", "edge:zh-CN-XiaoxiaoNeural"),
                 sleepTimerMinutes = o.optInt("sleepTimerMinutes", 0),
                 autoFollow = o.optBoolean("autoFollow", true),
                 highlightSentence = o.optBoolean("highlightSentence", true)
@@ -653,7 +653,7 @@ class BookRepository(private val context: Context) {
         val obj = JSONObject().apply {
             put("speechRate", s.speechRate.toDouble())
             put("pitch", s.pitch.toDouble())
-            put("voiceName", s.voiceName)
+            put("voiceId", s.voiceId)
             put("sleepTimerMinutes", s.sleepTimerMinutes)
             put("autoFollow", s.autoFollow)
             put("highlightSentence", s.highlightSentence)
@@ -668,9 +668,9 @@ class BookRepository(private val context: Context) {
 
         核心功能一览：
         1. 无缝翻章与真实仿真翻页：支持 3D 曲面卷页仿真、平滑翻页与上下连续滚动，章节末尾直接往后翻即可无缝进入下一章。
-        2. 书签与全书搜索：阅读界面顶栏支持一键添加书签、全书搜索与本地 AI 语音朗读。
-        3. 本地 AI 语音朗读：自带系统本地 TTS 离线朗读引擎，支持倍速调节、音色切换、定时关闭、自动跟随翻页与句级高亮。
-        4. 免费可商用字体库：字体管理内置 10 款 SIL OFL 1.1 免费可商用中文字体一键下载，并支持本地与 Wi-Fi 导入字体。
+        2. 书签与全书搜索：阅读界面顶栏支持一键添加书签、全书搜索与 AI 语音朗读。
+        3. AI 拟真语音朗读：内置多款拟真情感音色与系统本地离线兜底，支持倍速调节、定时关闭、自动跟随翻页与句级高亮。
+        4. 精选字体库：支持一键下载多款中文字体，并支持本地与 Wi-Fi 导入字体。
 
         祝你阅读愉快！
     """.trimIndent()
