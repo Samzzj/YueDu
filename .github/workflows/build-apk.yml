@@ -72,27 +72,28 @@ jobs:
 
       - name: Rename and Verify APK
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk YueDu-v0.5.0-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk YueDu-v0.6.0-debug.apk
           APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n1)
-          "$APKSIGNER" verify --print-certs YueDu-v0.5.0-debug.apk
+          "$APKSIGNER" verify --print-certs YueDu-v0.6.0-debug.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: YueDu-v0.5.0-debug-apk
-          path: YueDu-v0.5.0-debug.apk
+          name: YueDu-v0.6.0-debug-apk
+          path: YueDu-v0.6.0-debug.apk
 
-      - name: Publish v0.5.0 Release
+      - name: Publish v0.6.0 Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.5.0-preview
-          name: 悦读 YueDu v0.5.0
+          tag_name: v0.6.0-preview
+          name: 悦读 YueDu v0.6.0
           body: |
-            悦读 YueDu v0.5.0 更新内容：
-            - 书架书籍封面调整为纯净现代扁平化设计，去除实物书脊与拟物阴影
-            - 修复离线 AI 语音试听杂音问题（替换掉含 ARM64 INT8 杂音的 Kokoro-int8 模型，改用纯净 FP32 模型 + 16-bit PCM 防爆音音频管线）
-            - 仅将「云希」内置于安装包（并移除冗余标签），其余音色全部改为独立按需下载，互不联动
-          files: YueDu-v0.5.0-debug.apk
+            悦读 YueDu v0.6.0 更新内容：
+            - 优化在线与离线朗读引擎路由：有网优先使用高保真拟真在线音色并支持三句并发预加载与平滑衔接，无网自动无缝切换内置云希；试听与阅读声音完全一致
+            - 离线模型加入完整中文数字、标点规范化与流式连续音频输出，修复跳字、漏字与句间卡顿问题
+            - 新增后台媒体前台服务与 WakeLock 唤醒锁，息屏与后台切换不再断音
+            - AI 阅读页状态标签「已离线」更名为「已下载」，并将「应用外观」切换栏移至书架首页上方
+          files: YueDu-v0.6.0-debug.apk
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

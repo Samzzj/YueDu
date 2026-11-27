@@ -81,6 +81,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.yuedu.reader.model.AppAppearance
 import com.yuedu.reader.model.BookItem
 import com.yuedu.reader.model.CustomFont
 import com.yuedu.reader.model.DownloadableFont
@@ -116,7 +117,8 @@ fun BookshelfScreen(
     onDeleteFont: (CustomFont) -> Unit,
     onDownloadCatalogFont: suspend (DownloadableFont, (Float) -> Unit) -> Result<CustomFont>,
     onRenameBook: (BookItem, String) -> Unit,
-    onDeleteBook: (BookItem) -> Unit
+    onDeleteBook: (BookItem) -> Unit,
+    onChangeAppearance: (AppAppearance) -> Unit
 ) {
     val glass = LocalLiquidGlass.current
     val context = LocalContext.current
@@ -206,7 +208,47 @@ fun BookshelfScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Compact App Appearance Switcher at top of Homepage
+        val appCardBg = if (glass.isDark) Color(0xFF1C1C1E) else Color(0xFFE5E5EA).copy(alpha = 0.72f)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(appCardBg)
+                .padding(3.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AppAppearance.entries.forEach { mode ->
+                val selected = settings.appAppearance == mode
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(
+                            if (selected) {
+                                if (glass.isDark) Color(0xFF3A3A3C) else Color(0xFFFFFFFF)
+                            } else {
+                                Color.Transparent
+                            }
+                        )
+                        .clickable { onChangeAppearance(mode) }
+                        .padding(vertical = 6.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = mode.label,
+                        color = if (selected) glass.textPrimary else glass.textSecondary,
+                        fontSize = 12.sp,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
 
         LiquidGlassSurface(
             modifier = Modifier

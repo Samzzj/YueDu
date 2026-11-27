@@ -34,12 +34,14 @@ class LocalTtsManager(context: Context) {
 
     private val appContext = context.applicationContext
     private val sherpaEngine = SherpaOfflineTtsEngine(appContext)
+    private val previewCacheDir = File(appContext.cacheDir, "tts_preview_cache").apply { mkdirs() }
 
     private val crashHandler = CoroutineExceptionHandler { _, throwable ->
         if (throwable !is CancellationException) {
             _errorMessage.value = "朗读引擎异常，已自动保护"
             _isPlaying.value = false
             _isPaused.value = false
+            TtsPlaybackService.stop(appContext)
         }
     }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main + crashHandler)
@@ -102,7 +104,7 @@ class LocalTtsManager(context: Context) {
         }
     }
 
-    private fun refreshVoices(engine: TextToSpeech) {
+    private fun refreshVoices(@Suppress("UNUSED_PARAMETER") engine: TextToSpeech) {
         // Keep system voices internal only for ultimate emergency fallback; do not expose them in AI voice list.
         localVoicesById = emptyMap()
         _availableVoices.value = EdgeNeuralTtsEngine.neuralVoices
@@ -189,6 +191,8 @@ class LocalTtsManager(context: Context) {
         _isPaused.value = false
         _errorMessage.value = null
 
+        val activeVoice = resolveVoice(settings.voiceId)
+        TtsPlaybackService.startOrUpdate(appContext, "正在使用「${activeVoice.displayLabel}」朗读")
         startSleepTimerIfNeeded(settings.sleepTimerMinutes)
         speakFromIndex(currentIndex)
     }
@@ -206,11 +210,14 @@ class LocalTtsManager(context: Context) {
         _isPaused.value = true
         playJob?.cancel()
         releaseAllAudio()
+        TtsPlaybackService.startOrUpdate(appContext, "AI 朗读已暂停")
     }
 
     fun resume() {
         if (!_isPlaying.value || !_isPaused.value) return
         _isPaused.value = false
+        val activeVoice = resolveVoice(currentSettings.voiceId)
+        TtsPlaybackService.startOrUpdate(appContext, "正在使用「${activeVoice.displayLabel}」朗读")
         speakFromIndex(currentIndex)
     }
 
@@ -220,6 +227,7 @@ class LocalTtsManager(context: Context) {
         previewJob?.cancel()
         playJob?.cancel()
         releaseAllAudio()
+        TtsPlaybackService.stop(appContext)
         _sleepRemainingSeconds.value = 0
         _isPlaying.value = false
         _isPaused.value = false
@@ -237,78 +245,75 @@ class LocalTtsManager(context: Context) {
         }
 
         if (audioChanged && _isPlaying.value && !_isPaused.value && currentSentences.isNotEmpty()) {
+            val activeVoice = resolveVoice(newSettings.voiceId)
+            TtsPlaybackService.startOrUpdate(appContext, "正在使用「${activeVoice.displayLabel}」朗读")
             playJob?.cancel()
             releaseAllAudio()
             speakFromIndex(currentIndex)
         }
     }
 
+    private fun resolveVoice(voiceId: String): TtsVoiceOption {
+        return _availableVoices.value.find { it.id == voiceId }
+            ?: EdgeNeuralTtsEngine.neuralVoices.first()
+    }
+
+    /**
+     * Unified voice routing for BOTH previewVoice and speakFromIndex so preview and reading ALWAYS match:
+     * 1) If user explicitly downloaded this voice's offline pack -> use that downloaded offline pack.
+     * 2) Else (including built-in 云希 when online) -> use authentic EdgeNeuralTtsEngine.
+     * 3) If network is unavailable / Edge fails -> seamlessly fall back to built-in APK 云希.
+     */
     fun previewVoice(settings: TtsSettings) {
         val sampleText = "你好，欢迎使用悦读，现在为你朗读精彩小说。"
         previewJob?.cancel()
         releaseAllAudio()
 
-        val selectedOption = _availableVoices.value.find { it.id == settings.voiceId }
-            ?: EdgeNeuralTtsEngine.neuralVoices.first()
-
+        val selectedOption = resolveVoice(settings.voiceId)
         val packId = selectedOption.offlinePackId
-        when {
-            selectedOption.isBuiltinOffline && sherpaEngine.isBuiltinAvailable() -> {
-                previewJob = scope.launch {
-                    runCatching {
-                        sherpaEngine.speakBuiltinBlocking(
-                            sid = selectedOption.offlineSid,
-                            text = sampleText,
-                            speed = settings.speechRate
-                        )
-                    }.onFailure {
-                        if (it !is CancellationException) {
-                            speakLocally(sampleText, settings, "preview")
-                        }
-                    }
-                }
-            }
 
-            packId != null && sherpaEngine.isPackDownloaded(packId) -> {
-                previewJob = scope.launch {
-                    runCatching {
-                        sherpaEngine.speakBlocking(
-                            packId = packId,
-                            sid = selectedOption.offlineSid,
-                            text = sampleText,
-                            speed = settings.speechRate
-                        )
-                    }.onFailure {
-                        if (it !is CancellationException) {
-                            previewBuiltinYunxiFallback(sampleText, settings)
-                        }
-                    }
-                }
-            }
-
-            selectedOption.isNeural -> {
-                previewJob = scope.launch {
-                    try {
-                        val mp3 = withContext(Dispatchers.IO) {
-                            EdgeNeuralTtsEngine.synthesizeToMp3Bytes(
-                                text = sampleText,
-                                voiceName = selectedOption.engineVoiceName,
-                                speechRate = settings.speechRate
-                            )
-                        }
-                        playMp3Blocking(mp3)
-                    } catch (ce: CancellationException) {
-                        throw ce
-                    } catch (_: Exception) {
+        if (packId != null && sherpaEngine.isPackDownloaded(packId)) {
+            previewJob = scope.launch {
+                runCatching {
+                    val audio = sherpaEngine.synthesizeDownloadedToPcm(
+                        packId = packId,
+                        sid = selectedOption.offlineSid,
+                        rawText = sampleText,
+                        speed = settings.speechRate
+                    )
+                    sherpaEngine.playStreamingPcm(audio)
+                }.onFailure {
+                    if (it !is CancellationException) {
                         previewBuiltinYunxiFallback(sampleText, settings)
                     }
                 }
             }
+            return
+        }
 
-            else -> {
-                previewJob = scope.launch {
-                    previewBuiltinYunxiFallback(sampleText, settings)
+        previewJob = scope.launch {
+            try {
+                val safeRateKey = "%.2f".format(Locale.US, settings.speechRate)
+                val cacheKey = "${selectedOption.engineVoiceName}_$safeRateKey.mp3"
+                val cachedFile = File(previewCacheDir, cacheKey)
+                val mp3Bytes = withContext(Dispatchers.IO) {
+                    if (cachedFile.exists() && cachedFile.length() > 1024L) {
+                        cachedFile.readBytes()
+                    } else {
+                        EdgeNeuralTtsEngine.synthesizeToMp3Bytes(
+                            text = sampleText,
+                            voiceName = selectedOption.engineVoiceName,
+                            speechRate = settings.speechRate
+                        ).also { bytes ->
+                            if (bytes.size > 1024) runCatching { cachedFile.writeBytes(bytes) }
+                        }
+                    }
                 }
+                playMp3Blocking(mp3Bytes)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Exception) {
+                previewBuiltinYunxiFallback(sampleText, settings)
             }
         }
     }
@@ -316,11 +321,12 @@ class LocalTtsManager(context: Context) {
     private suspend fun previewBuiltinYunxiFallback(sampleText: String, settings: TtsSettings) {
         if (sherpaEngine.isBuiltinAvailable()) {
             runCatching {
-                sherpaEngine.speakBuiltinBlocking(
+                val audio = sherpaEngine.synthesizeBuiltinToPcm(
                     sid = SherpaOfflineTtsEngine.YUNXI_BUILTIN_SID,
-                    text = sampleText,
+                    rawText = sampleText,
                     speed = settings.speechRate
                 )
+                sherpaEngine.playStreamingPcm(audio)
             }.onFailure {
                 if (it !is CancellationException) {
                     speakLocally(sampleText, settings, "preview")
@@ -332,139 +338,138 @@ class LocalTtsManager(context: Context) {
     }
 
     private fun speakFromIndex(startIdx: Int) {
-        val selectedOption = _availableVoices.value.find { it.id == currentSettings.voiceId }
-            ?: EdgeNeuralTtsEngine.neuralVoices.first()
-
+        val selectedOption = resolveVoice(currentSettings.voiceId)
         val packId = selectedOption.offlinePackId
-        when {
-            selectedOption.isBuiltinOffline && sherpaEngine.isBuiltinAvailable() -> {
-                speakOfflineLoop(startIdx) { sentence ->
-                    sherpaEngine.speakBuiltinBlocking(
-                        sid = selectedOption.offlineSid,
-                        text = sentence.text,
-                        speed = currentSettings.speechRate
+
+        if (packId != null && sherpaEngine.isPackDownloaded(packId)) {
+            speakOfflineLoopWithLookahead(startIdx) { sentence ->
+                sherpaEngine.synthesizeDownloadedToPcm(
+                    packId = packId,
+                    sid = selectedOption.offlineSid,
+                    rawText = sentence.text,
+                    speed = currentSettings.speechRate
+                )
+            }
+            return
+        }
+
+        // Online Edge Neural TTS with 3-sentence lookahead prefetch & automatic built-in Yunxi offline fallback when offline
+        playJob?.cancel()
+        playJob = scope.launch {
+            var idx = startIdx
+            val prefetched = HashMap<Int, Deferred<ByteArray>>()
+
+            fun enqueuePrefetch(targetIdx: Int) {
+                if (targetIdx >= currentSentences.size || prefetched.containsKey(targetIdx)) return
+                val targetSentence = currentSentences[targetIdx]
+                prefetched[targetIdx] = async(Dispatchers.IO) {
+                    EdgeNeuralTtsEngine.synthesizeToMp3Bytes(
+                        text = targetSentence.text,
+                        voiceName = selectedOption.engineVoiceName,
+                        speechRate = currentSettings.speechRate
                     )
                 }
             }
 
-            packId != null && sherpaEngine.isPackDownloaded(packId) -> {
-                speakOfflineLoop(startIdx) { sentence ->
-                    sherpaEngine.speakBlocking(
-                        packId = packId,
-                        sid = selectedOption.offlineSid,
-                        text = sentence.text,
-                        speed = currentSettings.speechRate
-                    )
-                }
-            }
+            try {
+                while (idx < currentSentences.size && _isPlaying.value && !_isPaused.value) {
+                    val sentence = currentSentences[idx]
+                    currentIndex = idx
+                    _activeSentence.value = sentence
 
-            selectedOption.isNeural -> {
-                // Online Edge Neural TTS with next-sentence pre-fetch & built-in Yunxi offline fallback
-                playJob?.cancel()
-                playJob = scope.launch {
-                    var idx = startIdx
-                    var prefetched: Deferred<ByteArray>? = null
+                    enqueuePrefetch(idx)
+                    enqueuePrefetch(idx + 1)
+                    enqueuePrefetch(idx + 2)
+                    enqueuePrefetch(idx + 3)
 
-                    while (idx < currentSentences.size && _isPlaying.value && !_isPaused.value) {
-                        val sentence = currentSentences[idx]
-                        currentIndex = idx
-                        _activeSentence.value = sentence
-
-                        val currentDeferred = prefetched ?: async(Dispatchers.IO) {
-                            EdgeNeuralTtsEngine.synthesizeToMp3Bytes(
-                                text = sentence.text,
-                                voiceName = selectedOption.engineVoiceName,
-                                speechRate = currentSettings.speechRate
-                            )
-                        }
-
-                        prefetched = if (idx + 1 < currentSentences.size) {
-                            val nextSentence = currentSentences[idx + 1]
-                            async(Dispatchers.IO) {
-                                EdgeNeuralTtsEngine.synthesizeToMp3Bytes(
-                                    text = nextSentence.text,
-                                    voiceName = selectedOption.engineVoiceName,
-                                    speechRate = currentSettings.speechRate
+                    val currentDeferred = prefetched.remove(idx)!!
+                    try {
+                        val mp3Bytes = currentDeferred.await()
+                        if (!_isPlaying.value || _isPaused.value) break
+                        playMp3Blocking(mp3Bytes)
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (_: Exception) {
+                        // Online synthesis failed after retries -> fall back to built-in offline Yunxi smoothly
+                        prefetched.values.forEach { it.cancel() }
+                        prefetched.clear()
+                        if (sherpaEngine.isBuiltinAvailable()) {
+                            speakOfflineLoopWithLookahead(idx) { fallbackSentence ->
+                                sherpaEngine.synthesizeBuiltinToPcm(
+                                    sid = SherpaOfflineTtsEngine.YUNXI_BUILTIN_SID,
+                                    rawText = fallbackSentence.text,
+                                    speed = currentSettings.speechRate
                                 )
                             }
-                        } else null
-
-                        try {
-                            val mp3Bytes = currentDeferred.await()
-                            if (!_isPlaying.value || _isPaused.value) break
-                            playMp3Blocking(mp3Bytes)
-                        } catch (ce: CancellationException) {
-                            prefetched?.cancel()
-                            throw ce
-                        } catch (_: Exception) {
-                            prefetched?.cancel()
-                            prefetched = null
-                            if (sherpaEngine.isBuiltinAvailable()) {
-                                speakOfflineLoop(idx) { fallbackSentence ->
-                                    sherpaEngine.speakBuiltinBlocking(
-                                        sid = SherpaOfflineTtsEngine.YUNXI_BUILTIN_SID,
-                                        text = fallbackSentence.text,
-                                        speed = currentSettings.speechRate
-                                    )
-                                }
-                            } else {
-                                speakSentenceLocallyFallback(idx)
-                            }
-                            return@launch
+                        } else {
+                            speakSentenceLocallyFallback(idx)
                         }
-
-                        if (!_isPlaying.value || _isPaused.value) break
-                        idx++
+                        return@launch
                     }
 
-                    if (idx >= currentSentences.size && _isPlaying.value && !_isPaused.value) {
-                        if (currentSettings.sleepTimerMinutes == -1) stop() else onChapterFinishedCallback?.invoke()
-                    }
+                    if (!_isPlaying.value || _isPaused.value) break
+                    idx++
                 }
-            }
 
-            else -> speakSentenceLocallyFallback(startIdx)
+                if (idx >= currentSentences.size && _isPlaying.value && !_isPaused.value) {
+                    if (currentSettings.sleepTimerMinutes == -1) stop() else onChapterFinishedCallback?.invoke()
+                }
+            } finally {
+                prefetched.values.forEach { it.cancel() }
+                prefetched.clear()
+            }
         }
     }
 
-    private fun speakOfflineLoop(
+    private fun speakOfflineLoopWithLookahead(
         startIdx: Int,
-        synthesizer: suspend (TtsSentence) -> Unit
+        synthesizer: suspend (TtsSentence) -> SherpaOfflineTtsEngine.SynthesizedAudio
     ) {
         playJob?.cancel()
         playJob = scope.launch {
             var idx = startIdx
-            while (idx < currentSentences.size && _isPlaying.value && !_isPaused.value) {
-                val sentence = currentSentences[idx]
-                currentIndex = idx
-                _activeSentence.value = sentence
-                try {
-                    synthesizer(sentence)
-                } catch (ce: CancellationException) {
-                    throw ce
-                } catch (_: Exception) {
-                    if (sherpaEngine.isBuiltinAvailable()) {
-                        runCatching {
-                            sherpaEngine.speakBuiltinBlocking(
-                                sid = SherpaOfflineTtsEngine.YUNXI_BUILTIN_SID,
-                                text = sentence.text,
-                                speed = currentSettings.speechRate
-                            )
-                        }.onFailure { err ->
-                            if (err is CancellationException) throw err
-                            speakSentenceLocallyFallback(idx)
-                            return@launch
+            var nextDeferred: Deferred<SherpaOfflineTtsEngine.SynthesizedAudio>? = null
+
+            try {
+                while (idx < currentSentences.size && _isPlaying.value && !_isPaused.value) {
+                    val sentence = currentSentences[idx]
+                    currentIndex = idx
+                    _activeSentence.value = sentence
+
+                    val currentDeferred = nextDeferred ?: async(Dispatchers.IO) {
+                        synthesizer(sentence)
+                    }
+
+                    nextDeferred = if (idx + 1 < currentSentences.size) {
+                        val nextSentence = currentSentences[idx + 1]
+                        async(Dispatchers.IO) {
+                            synthesizer(nextSentence)
                         }
                     } else {
-                        speakSentenceLocallyFallback(idx)
-                        return@launch
+                        null
                     }
+
+                    try {
+                        val audio = currentDeferred.await()
+                        if (!_isPlaying.value || _isPaused.value) break
+                        if (audio.pcm.isNotEmpty()) {
+                            sherpaEngine.playStreamingPcm(audio)
+                        }
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (_: Exception) {
+                        // Skip only failed chunk gracefully instead of mutating user's selected voice mid-book
+                    }
+
+                    if (!_isPlaying.value || _isPaused.value) break
+                    idx++
                 }
-                if (!_isPlaying.value || _isPaused.value) break
-                idx++
-            }
-            if (idx >= currentSentences.size && _isPlaying.value && !_isPaused.value) {
-                if (currentSettings.sleepTimerMinutes == -1) stop() else onChapterFinishedCallback?.invoke()
+
+                if (idx >= currentSentences.size && _isPlaying.value && !_isPaused.value) {
+                    if (currentSettings.sleepTimerMinutes == -1) stop() else onChapterFinishedCallback?.invoke()
+                }
+            } finally {
+                nextDeferred?.cancel()
             }
         }
     }
@@ -582,6 +587,7 @@ class LocalTtsManager(context: Context) {
         previewJob?.cancel()
         playJob?.cancel()
         releaseAllAudio()
+        TtsPlaybackService.stop(appContext)
         sherpaEngine.release()
         runCatching { localTts?.shutdown() }
         localTts = null
@@ -608,7 +614,7 @@ class LocalTtsManager(context: Context) {
                             end++
                         }
                         val sub = text.substring(segStart, end).trim()
-                        if (sub.isNotEmpty()) {
+                        if (sub.any { it.isLetterOrDigit() }) {
                             result.add(
                                 TtsSentence(
                                     index = result.size,

@@ -43,8 +43,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.yuedu.reader.model.AppAppearance
-import com.yuedu.reader.model.ReaderSettings
 import com.yuedu.reader.model.TtsSettings
 import com.yuedu.reader.model.TtsVoiceOption
 import com.yuedu.reader.ui.theme.LocalLiquidGlass
@@ -53,7 +51,6 @@ import java.util.Locale
 @Composable
 fun AiReadingSettingsScreen(
     ttsSettings: TtsSettings,
-    readerSettings: ReaderSettings,
     isTtsPlaying: Boolean,
     isTtsPaused: Boolean,
     sleepRemainingSeconds: Int,
@@ -65,8 +62,7 @@ fun AiReadingSettingsScreen(
     onSelectAndPreviewVoice: (TtsVoiceOption) -> Unit,
     onDownloadVoicePack: (String) -> Unit,
     onPauseResumeTts: () -> Unit,
-    onStopTts: () -> Unit,
-    onChangeAppearance: (AppAppearance) -> Unit
+    onStopTts: () -> Unit
 ) {
     val glass = LocalLiquidGlass.current
     val pageBg = if (glass.isDark) Color(0xFF000000) else Color(0xFFF2F2F7)
@@ -469,7 +465,7 @@ fun AiReadingSettingsScreen(
 
                                     packId != null && isDownloaded -> {
                                         Text(
-                                            text = "已离线",
+                                            text = "已下载",
                                             color = Color(0xFF28A745),
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.SemiBold,
@@ -533,41 +529,6 @@ fun AiReadingSettingsScreen(
             }
         }
 
-        // Section 3: App Appearance Segmented Bar
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                SectionLabel(title = "应用外观", color = glass.textSecondary)
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(cardBg)
-                        .padding(5.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    AppAppearance.entries.forEach { mode ->
-                        val selected = readerSettings.appAppearance == mode
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(if (selected) glass.accent else Color.Transparent)
-                                .clickable { onChangeAppearance(mode) }
-                                .padding(vertical = 10.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = mode.label,
-                                color = if (selected) Color.White else glass.textPrimary,
-                                fontSize = 13.sp,
-                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
-                            )
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 

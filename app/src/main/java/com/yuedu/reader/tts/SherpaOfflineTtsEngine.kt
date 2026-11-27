@@ -23,8 +23,8 @@ import java.io.FileOutputStream
 
 /**
  * Offline neural TTS engine powered by `k2-fsa/sherpa-onnx`.
- * Uses clean FP32 VITS / Matcha models (avoiding ARM64 Kokoro-int8 iSTFT noise)
- * and outputs sanitized 16-bit PCM to AudioTrack for click/static-free playback.
+ * Uses FP32 VITS / Matcha models, Chinese text normalization (preventing skipped chars),
+ * lookahead pre-synthesis, and a persistent 16-bit PCM AudioTrack for smooth gapless playback.
  */
 class SherpaOfflineTtsEngine(private val context: Context) {
 
@@ -36,6 +36,11 @@ class SherpaOfflineTtsEngine(private val context: Context) {
         val sizeLabel: String,
         val kind: PackKind,
         val downloadUrls: List<String>
+    )
+
+    data class SynthesizedAudio(
+        val pcm: ShortArray,
+        val sampleRate: Int
     )
 
     companion object {
@@ -107,12 +112,168 @@ class SherpaOfflineTtsEngine(private val context: Context) {
                 downloadUrls = modelUrls("vits-zh-hf-echo.tar.bz2")
             )
         )
+
+        private val digitsZh = arrayOf("零", "一", "二", "三", "四", "五", "六", "七", "八", "九")
+
+        /**
+         * Normalizes Chinese novel text (numbers, percentages, decimals, quotes, brackets, dashes)
+         * into clean tokens present in VITS/Matcha lexicons so words are never skipped or dropped.
+         */
+        fun normalizeTextForOfflineTts(raw: String): String {
+            if (raw.isBlank()) return ""
+            val half = buildString(raw.length) {
+                for (ch in raw) {
+                    val c = ch.code
+                    when {
+                        c in 0xFF01..0xFF5E -> append((c - 0xFEE0).toChar())
+                        c == 0x3000 || c == 0x00A0 -> append(' ')
+                        c in 0x0000..0x001F -> if (ch == '\n') append('。') else append(' ')
+                        else -> append(ch)
+                    }
+                }
+            }
+
+            var text = half
+                // Percentages: 12.5% -> 百分之十二点五
+                .replace(Regex("""(\d+(?:\.\d+)?)\s*%""")) { m ->
+                    "百分之" + decimalToChinese(m.groupValues[1])
+                }
+                // Decimals: 3.14 -> 三点一四
+                .replace(Regex("""\d+\.\d+""")) { m ->
+                    decimalToChinese(m.value)
+                }
+                // Standalone integers
+                .replace(Regex("""\d+""")) { m ->
+                    val numStr = m.value
+                    if (numStr.length == 4 && numStr.startsWith("19") || numStr.startsWith("20") && numStr.length == 4) {
+                        digitsOnlyToChinese(numStr)
+                    } else if (numStr.length > 8) {
+                        digitsOnlyToChinese(numStr)
+                    } else {
+                        integerToChinese(numStr)
+                    }
+                }
+
+            val sb = StringBuilder(text.length)
+            var lastWasPause = false
+            for (ch in text) {
+                when (ch) {
+                    '，', '。', '！', '？' -> {
+                        if (!lastWasPause && sb.isNotEmpty()) {
+                            sb.append(ch)
+                            lastWasPause = true
+                        }
+                    }
+                    ',', ';', '；', ':', '：', '、', '—', '–', '-', '~', '～', '…', '·' -> {
+                        if (!lastWasPause && sb.isNotEmpty()) {
+                            sb.append('，')
+                            lastWasPause = true
+                        }
+                    }
+                    '.' -> {
+                        if (!lastWasPause && sb.isNotEmpty()) {
+                            sb.append('。')
+                            lastWasPause = true
+                        }
+                    }
+                    '!' -> {
+                        if (!lastWasPause && sb.isNotEmpty()) {
+                            sb.append('！')
+                            lastWasPause = true
+                        }
+                    }
+                    '?' -> {
+                        if (!lastWasPause && sb.isNotEmpty()) {
+                            sb.append('？')
+                            lastWasPause = true
+                        }
+                    }
+                    // Strip brackets/quotes cleanly so they never merge into adjacent Chinese words as OOV
+                    '“', '”', '‘', '’', '"', '\'', '「', '」', '『', '』',
+                    '《', '》', '〈', '〉', '【', '】', '（', '）', '(', ')', '[', ']', '{', '}', ' ' -> {
+                        // Skip silently without inserting invalid lexicon tokens
+                    }
+                    else -> {
+                        if (ch.code >= 0x4E00 && ch.code <= 0x9FFF || ch.code in 0x3400..0x4DBF) {
+                            sb.append(ch)
+                            lastWasPause = false
+                        } else if (ch in 'a'..'z' || ch in 'A'..'Z') {
+                            sb.append(ch)
+                            lastWasPause = false
+                        }
+                    }
+                }
+            }
+            return sb.toString().trim('，', '。', '！', '？')
+        }
+
+        private fun digitsOnlyToChinese(s: String): String =
+            s.map { c -> digitsZh[(c - '0').coerceIn(0, 9)] }.joinToString("")
+
+        private fun decimalToChinese(s: String): String {
+            val parts = s.split('.', limit = 2)
+            val intPart = integerToChinese(parts[0])
+            if (parts.size < 2 || parts[1].isEmpty()) return intPart
+            return "$intPart点${digitsOnlyToChinese(parts[1])}"
+        }
+
+        private fun integerToChinese(raw: String): String {
+            val clean = raw.trimStart('0')
+            if (clean.isEmpty()) return "零"
+            val value = clean.toLongOrNull() ?: return digitsOnlyToChinese(raw)
+            if (value == 0L) return "零"
+            if (value >= 100_000_000L) {
+                val yi = value / 100_000_000L
+                val rem = value % 100_000_000L
+                val head = "${integerToChinese(yi.toString())}亿"
+                return if (rem == 0L) head else if (rem < 10_000_000L) "$head零${integerToChinese(rem.toString())}" else "$head${integerToChinese(rem.toString())}"
+            }
+            if (value >= 10_000L) {
+                val wan = value / 10_000L
+                val rem = value % 10_000L
+                val head = "${integerToChinese(wan.toString())}万"
+                return if (rem == 0L) head else if (rem < 1_000L) "$head零${integerToChinese(rem.toString())}" else "$head${integerToChinese(rem.toString())}"
+            }
+            val n = value.toInt()
+            val qian = n / 1000
+            val bai = (n % 1000) / 100
+            val shi = (n % 100) / 10
+            val ge = n % 10
+            val sb = StringBuilder()
+            var needZero = false
+            if (qian > 0) {
+                sb.append(digitsZh[qian]).append("千")
+            }
+            if (bai > 0) {
+                sb.append(digitsZh[bai]).append("百")
+            } else if (qian > 0 && (shi > 0 || ge > 0)) {
+                needZero = true
+            }
+            if (shi > 0) {
+                if (needZero) {
+                    sb.append("零")
+                    needZero = false
+                }
+                if (!(qian == 0 && bai == 0 && shi == 1)) {
+                    sb.append(digitsZh[shi])
+                }
+                sb.append("十")
+            } else if (bai > 0 && ge > 0) {
+                needZero = true
+            }
+            if (ge > 0) {
+                if (needZero) sb.append("零")
+                sb.append(digitsZh[ge])
+            }
+            return sb.toString()
+        }
     }
 
     private val modelsRoot = File(context.filesDir, "tts_models").apply { mkdirs() }
     private var loadedKey: String? = null
     private var loadedTts: OfflineTts? = null
     private var currentAudioTrack: AudioTrack? = null
+    private var activeSampleRate: Int = 0
 
     private val builtinAvailableCached: Boolean by lazy {
         runCatching {
@@ -305,37 +466,39 @@ class SherpaOfflineTtsEngine(private val context: Context) {
         return created
     }
 
-    suspend fun speakBuiltinBlocking(
+    suspend fun synthesizeBuiltinToPcm(
         sid: Int,
-        text: String,
+        rawText: String,
         speed: Float
-    ) = withContext(Dispatchers.IO) {
+    ): SynthesizedAudio = withContext(Dispatchers.IO) {
+        val clean = normalizeTextForOfflineTts(rawText)
+        if (clean.isEmpty()) return@withContext SynthesizedAudio(ShortArray(0), 16000)
         val tts = getOrCreateBuiltinYunxi()
         currentCoroutineContext().ensureActive()
-        val audio = tts.generate(text = text, sid = sid, speed = speed.coerceIn(0.5f, 2.5f))
+        val audio = tts.generate(text = clean, sid = sid, speed = speed.coerceIn(0.5f, 2.5f))
         currentCoroutineContext().ensureActive()
-        playPcm16Blocking(audio.samples, audio.sampleRate)
+        SynthesizedAudio(toSanitizedPcm16(audio.samples, audio.sampleRate), audio.sampleRate)
     }
 
-    suspend fun speakBlocking(
+    suspend fun synthesizeDownloadedToPcm(
         packId: String,
         sid: Int,
-        text: String,
+        rawText: String,
         speed: Float
-    ) = withContext(Dispatchers.IO) {
+    ): SynthesizedAudio = withContext(Dispatchers.IO) {
+        val clean = normalizeTextForOfflineTts(rawText)
+        if (clean.isEmpty()) return@withContext SynthesizedAudio(ShortArray(0), 16000)
         val tts = getOrCreateDownloadedTts(packId)
         currentCoroutineContext().ensureActive()
-        val audio = tts.generate(text = text, sid = sid, speed = speed.coerceIn(0.5f, 2.5f))
+        val audio = tts.generate(text = clean, sid = sid, speed = speed.coerceIn(0.5f, 2.5f))
         currentCoroutineContext().ensureActive()
-        playPcm16Blocking(audio.samples, audio.sampleRate)
+        SynthesizedAudio(toSanitizedPcm16(audio.samples, audio.sampleRate), audio.sampleRate)
     }
 
-    private suspend fun playPcm16Blocking(samples: FloatArray, sampleRate: Int) {
-        if (samples.isEmpty() || sampleRate <= 0) return
-
-        // Convert to sanitized 16-bit PCM with 5ms edge fade to eliminate float HAL buzz and boundary clicks
+    private fun toSanitizedPcm16(samples: FloatArray, sampleRate: Int): ShortArray {
+        if (samples.isEmpty() || sampleRate <= 0) return ShortArray(0)
         val pcm = ShortArray(samples.size)
-        val fadeSamples = minOf(samples.size / 4, (sampleRate * 0.005f).toInt().coerceAtLeast(1))
+        val fadeSamples = minOf(samples.size / 4, (sampleRate * 0.004f).toInt().coerceAtLeast(1))
         for (i in samples.indices) {
             var s = samples[i]
             if (!s.isFinite()) s = 0f
@@ -347,12 +510,43 @@ class SherpaOfflineTtsEngine(private val context: Context) {
             }
             pcm[i] = (s * 32767f).toInt().coerceIn(-32768, 32767).toShort()
         }
+        return pcm
+    }
+
+    /**
+     * Streams synthesized PCM into a persistent AudioTrack kept alive across consecutive sentences
+     * so chapter playback runs seamlessly without between-sentence gaps or track teardown pops.
+     */
+    suspend fun playStreamingPcm(audio: SynthesizedAudio) = withContext(Dispatchers.IO) {
+        if (audio.pcm.isEmpty() || audio.sampleRate <= 0) return@withContext
+        val track = ensureAudioTrack(audio.sampleRate)
+        var offset = 0
+        val chunkSize = 2048
+        while (offset < audio.pcm.size) {
+            currentCoroutineContext().ensureActive()
+            val count = minOf(chunkSize, audio.pcm.size - offset)
+            val written = track.write(audio.pcm, offset, count, AudioTrack.WRITE_BLOCKING)
+            if (written <= 0) break
+            offset += written
+        }
+    }
+
+    @Synchronized
+    private fun ensureAudioTrack(sampleRate: Int): AudioTrack {
+        val existing = currentAudioTrack
+        if (existing != null && activeSampleRate == sampleRate && existing.state == AudioTrack.STATE_INITIALIZED) {
+            if (existing.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                existing.play()
+            }
+            return existing
+        }
+        stopAudioTrack()
 
         val minBufBytes = AudioTrack.getMinBufferSize(
             sampleRate,
             AudioFormat.CHANNEL_OUT_MONO,
             AudioFormat.ENCODING_PCM_16BIT
-        ).coerceAtLeast(4096)
+        ).coerceAtLeast(8192)
 
         val track = AudioTrack.Builder()
             .setAudioAttributes(
@@ -368,39 +562,14 @@ class SherpaOfflineTtsEngine(private val context: Context) {
                     .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                     .build()
             )
-            .setBufferSizeInBytes(minBufBytes * 2)
+            .setBufferSizeInBytes(minBufBytes * 3)
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
 
-        synchronized(this) {
-            stopAudioTrack()
-            currentAudioTrack = track
-        }
-
-        try {
-            track.play()
-            var offset = 0
-            val chunkSize = 2048
-            while (offset < pcm.size) {
-                currentCoroutineContext().ensureActive()
-                val count = minOf(chunkSize, pcm.size - offset)
-                val written = track.write(pcm, offset, count, AudioTrack.WRITE_BLOCKING)
-                if (written <= 0) break
-                offset += written
-            }
-        } finally {
-            synchronized(this) {
-                runCatching {
-                    if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
-                        track.stop()
-                    }
-                }
-                runCatching { track.release() }
-                if (currentAudioTrack === track) {
-                    currentAudioTrack = null
-                }
-            }
-        }
+        track.play()
+        currentAudioTrack = track
+        activeSampleRate = sampleRate
+        return track
     }
 
     fun stopPlayback() {
@@ -418,6 +587,7 @@ class SherpaOfflineTtsEngine(private val context: Context) {
         }
         runCatching { t.release() }
         currentAudioTrack = null
+        activeSampleRate = 0
     }
 
     fun release() {

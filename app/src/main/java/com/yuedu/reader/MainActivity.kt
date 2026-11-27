@@ -267,11 +267,13 @@ fun YueDuApp(
                             },
                             onDeleteBook = { book ->
                                 scope.launch { repository.deleteBook(book.id) }
+                            },
+                            onChangeAppearance = { mode ->
+                                scope.launch { repository.updateSettings { it.copy(appAppearance = mode) } }
                             }
                         )
                         else -> AiReadingSettingsScreen(
                             ttsSettings = ttsSettings,
-                            readerSettings = settings,
                             isTtsPlaying = isTtsPlaying,
                             isTtsPaused = isTtsPaused,
                             sleepRemainingSeconds = sleepRemainingSeconds,
@@ -299,7 +301,7 @@ fun YueDuApp(
                                     Toast.makeText(context, "开始下载离线语音包...", Toast.LENGTH_SHORT).show()
                                     ttsManager.downloadOfflinePack(packId)
                                         .onSuccess {
-                                            Toast.makeText(context, "语音包下载完成，已切换至本地离线合成", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, "语音包下载完成", Toast.LENGTH_SHORT).show()
                                         }
                                         .onFailure {
                                             Toast.makeText(context, "语音包下载失败：${it.message}", Toast.LENGTH_LONG).show()
@@ -309,10 +311,7 @@ fun YueDuApp(
                             onPauseResumeTts = {
                                 if (isTtsPaused) ttsManager.resume() else ttsManager.pause()
                             },
-                            onStopTts = { ttsManager.stop() },
-                            onChangeAppearance = { mode ->
-                                scope.launch { repository.updateSettings { it.copy(appAppearance = mode) } }
-                            }
+                            onStopTts = { ttsManager.stop() }
                         )
                     }
                 }

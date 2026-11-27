@@ -126,8 +126,10 @@ object EdgeNeuralTtsEngine {
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(12, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
         .writeTimeout(8, TimeUnit.SECONDS)
+        .pingInterval(15, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
         .build()
 
     suspend fun synthesizeToMp3Bytes(
@@ -135,12 +137,20 @@ object EdgeNeuralTtsEngine {
         voiceName: String,
         speechRate: Float
     ): ByteArray {
-        return try {
-            executeSynthesis(text, voiceName, speechRate)
-        } catch (e: SkewException) {
-            EdgeDrm.adjustClockSkew(e.serverDateHeader)
-            executeSynthesis(text, voiceName, speechRate)
+        var lastErr: Exception? = null
+        repeat(3) { attempt ->
+            try {
+                return executeSynthesis(text, voiceName, speechRate)
+            } catch (e: SkewException) {
+                EdgeDrm.adjustClockSkew(e.serverDateHeader)
+                lastErr = e
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                lastErr = e
+                if (attempt < 2) kotlinx.coroutines.delay(250L * (attempt + 1))
+            }
         }
+        throw lastErr ?: IllegalStateException("在线语音合成失败")
     }
 
     private suspend fun executeSynthesis(
@@ -331,6 +341,7 @@ object EdgeNeuralTtsEngine {
             return bytes.joinToString("") { "%02X".format(it) }
         }
 
+        @Synchronized
         fun adjustClockSkew(serverDateHeader: String) {
             runCatching {
                 val fmt = SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss zzz", Locale.US)
