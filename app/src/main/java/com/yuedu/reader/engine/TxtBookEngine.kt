@@ -343,7 +343,16 @@ object TxtBookEngine {
                     if (line > sliceStartLine) {
                         val s = layout.getLineStart(sliceStartLine)
                         val e = layout.getLineStart(line)
-                        currentSlices.add(PageSlice(para.text.substring(s, e).trimEnd('\n'), para.isTitle, hasBottomGap = false))
+                        val sliceText = para.text.substring(s, e).trimEnd('\n')
+                        currentSlices.add(
+                            PageSlice(
+                                text = sliceText,
+                                startOffset = para.charStartOffset + s,
+                                endOffset = para.charStartOffset + s + sliceText.length,
+                                isTitle = para.isTitle,
+                                hasBottomGap = false
+                            )
+                        )
                         flushPage(para.charStartOffset + e)
                         pageStartOffset = para.charStartOffset + e
                         sliceStartLine = line
@@ -358,11 +367,14 @@ object TxtBookEngine {
             if (sliceStartLine < layout.lineCount) {
                 val s = layout.getLineStart(sliceStartLine)
                 val e = para.text.length
+                val sliceText = para.text.substring(s, e).trimEnd('\n')
                 val extraGap = if (para.isTitle) maxOf(paragraphSpacingPx, textSizePx * 0.55f) else paragraphSpacingPx
                 val fitsGap = currentY + extraGap <= heightPx
                 currentSlices.add(
                     PageSlice(
-                        text = para.text.substring(s, e).trimEnd('\n'),
+                        text = sliceText,
+                        startOffset = para.charStartOffset + s,
+                        endOffset = para.charStartOffset + s + sliceText.length,
                         isTitle = para.isTitle,
                         hasBottomGap = fitsGap
                     )

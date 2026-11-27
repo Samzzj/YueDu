@@ -50,7 +50,18 @@ data class CustomFont(
     val fileName: String,
     val filePath: String,
     val addedAt: Long = System.currentTimeMillis(),
-    val isBuiltIn: Boolean = false
+    val isBuiltIn: Boolean = false,
+    val catalogId: String? = null
+)
+
+data class DownloadableFont(
+    val id: String,
+    val displayName: String,
+    val license: String,
+    val styleTag: String,
+    val sizeLabel: String,
+    val fileName: String,
+    val downloadUrl: String
 )
 
 enum class ReaderTheme(
@@ -146,8 +157,34 @@ data class ReaderSettings(
     }
 }
 
+data class TtsSettings(
+    val speechRate: Float = 1.0f,
+    val pitch: Float = 1.0f,
+    val voiceName: String = "",
+    val sleepTimerMinutes: Int = 0, // 0 = off, -1 = end of chapter, >0 = minutes
+    val autoFollow: Boolean = true,
+    val highlightSentence: Boolean = true
+)
+
+data class TtsVoiceOption(
+    val name: String,
+    val displayLabel: String,
+    val localeLabel: String,
+    val isOffline: Boolean
+)
+
+data class TtsSentence(
+    val index: Int,
+    val chapterIndex: Int,
+    val startOffset: Int,
+    val endOffset: Int,
+    val text: String
+)
+
 data class PageSlice(
     val text: String,
+    val startOffset: Int,
+    val endOffset: Int,
     val isTitle: Boolean,
     val hasBottomGap: Boolean
 )

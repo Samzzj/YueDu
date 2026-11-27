@@ -15,7 +15,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoStories
-import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -34,12 +34,13 @@ import com.yuedu.reader.data.BookRepository
 import com.yuedu.reader.model.BookItem
 import com.yuedu.reader.model.TransferKind
 import com.yuedu.reader.server.WifiTransferServer
+import com.yuedu.reader.tts.LocalTtsManager
 import com.yuedu.reader.ui.components.AmbientGlassBackground
 import com.yuedu.reader.ui.components.GlassTabItem
 import com.yuedu.reader.ui.components.LiquidGlassFloatingTabBar
+import com.yuedu.reader.ui.screens.AiReadingSettingsScreen
 import com.yuedu.reader.ui.screens.BookshelfScreen
 import com.yuedu.reader.ui.screens.ReaderScreen
-import com.yuedu.reader.ui.screens.TransferAndSettingsScreen
 import com.yuedu.reader.ui.theme.YueDuTheme
 import kotlinx.coroutines.launch
 
@@ -47,6 +48,7 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var repository: BookRepository
     private lateinit var wifiServer: WifiTransferServer
+    private lateinit var ttsManager: LocalTtsManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,9 +56,14 @@ class MainActivity : ComponentActivity() {
 
         repository = BookRepository(applicationContext)
         wifiServer = WifiTransferServer(applicationContext, repository)
+        ttsManager = LocalTtsManager(applicationContext)
 
         setContent {
-            YueDuApp(repository = repository, wifiServer = wifiServer)
+            YueDuApp(
+                repository = repository,
+                wifiServer = wifiServer,
+                ttsManager = ttsManager
+            )
         }
     }
 
@@ -65,13 +72,17 @@ class MainActivity : ComponentActivity() {
         if (::wifiServer.isInitialized) {
             wifiServer.stop()
         }
+        if (::ttsManager.isInitialized) {
+            ttsManager.shutdown()
+        }
     }
 }
 
 @Composable
 fun YueDuApp(
     repository: BookRepository,
-    wifiServer: WifiTransferServer
+    wifiServer: WifiTransferServer,
+    ttsManager: LocalTtsManager
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -79,9 +90,19 @@ fun YueDuApp(
     val books by repository.books.collectAsState()
     val fonts by repository.fonts.collectAsState()
     val settings by repository.settings.collectAsState()
+    val ttsSettings by repository.ttsSettings.collectAsState()
+
     val isServerRunning by wifiServer.isRunning.collectAsState()
     val serverUrl by wifiServer.serverUrl.collectAsState()
     val recentTransfers by wifiServer.recentTransfers.collectAsState()
+
+    val isTtsReady by ttsManager.isReady.collectAsState()
+    val isTtsPlaying by ttsManager.isPlaying.collectAsState()
+    val isTtsPaused by ttsManager.isPaused.collectAsState()
+    val availableVoices by ttsManager.availableVoices.collectAsState()
+    val activeTtsSentence by ttsManager.activeSentence.collectAsState()
+    val sleepRemainingSeconds by ttsManager.sleepRemainingSeconds.collectAsState()
+    val ttsError by ttsManager.errorMessage.collectAsState()
 
     var selectedTab by remember { mutableIntStateOf(0) }
     var activeBookId by remember { mutableStateOf<String?>(null) }
@@ -146,7 +167,12 @@ fun YueDuApp(
             ReaderScreen(
                 book = activeBook,
                 settings = settings,
+                ttsSettings = ttsSettings,
                 fonts = fonts,
+                isTtsPlaying = isTtsPlaying,
+                isTtsPaused = isTtsPaused,
+                activeTtsSentence = activeTtsSentence,
+                sleepRemainingSeconds = sleepRemainingSeconds,
                 resolveTypeface = { repository.getTypeface(it) },
                 loadChapters = { repository.loadChapters(it) },
                 loadChapterParagraphs = { b, ch -> repository.loadChapterParagraphs(b, ch) },
@@ -162,17 +188,42 @@ fun YueDuApp(
                 onUpdateSettings = { transform ->
                     scope.launch { repository.updateSettings(transform) }
                 },
-                onGoImportFonts = {
+                onStartTts = { sentences, startIdx, onChapterDone ->
+                    ttsManager.startReading(sentences, startIdx, ttsSettings, onChapterDone)
+                },
+                onContinueTtsNextChapter = { sentences ->
+                    ttsManager.continueNextChapter(sentences)
+                },
+                onPauseResumeTts = {
+                    if (isTtsPaused) ttsManager.resume() else ttsManager.pause()
+                },
+                onStopTts = { ttsManager.stop() },
+                onOpenAiSettingsTab = {
                     activeBookId = null
                     selectedTab = 1
                 },
-                onExit = { activeBookId = null }
+                onImportLocalFont = { fontPickerLauncher.launch(arrayOf("*/*")) },
+                onDeleteFont = { font ->
+                    scope.launch { repository.deleteFont(font.id) }
+                },
+                onDownloadCatalogFont = { catalogFont, onProgress ->
+                    runCatching { repository.downloadCatalogFont(catalogFont, onProgress) }
+                },
+                onGoWifiTransfer = {
+                    activeBookId = null
+                    selectedTab = 0
+                    wifiServer.start()
+                },
+                onExit = {
+                    ttsManager.stop()
+                    activeBookId = null
+                }
             )
         } else {
             val tabs = remember {
                 listOf(
                     GlassTabItem("书架", Icons.Rounded.AutoStories),
-                    GlassTabItem("传书设置", Icons.Rounded.Tune)
+                    GlassTabItem("AI阅读设置", Icons.Rounded.GraphicEq)
                 )
             }
 
@@ -185,9 +236,31 @@ fun YueDuApp(
                     when (tab) {
                         0 -> BookshelfScreen(
                             books = books,
+                            fonts = fonts,
+                            settings = settings,
+                            isWifiRunning = isServerRunning,
+                            wifiServerUrl = serverUrl,
+                            recentTransfers = recentTransfers,
+                            resolveTypeface = { repository.getTypeface(it) },
                             onOpenBook = { activeBookId = it.id },
                             onImportLocalBook = { bookPickerLauncher.launch(arrayOf("text/plain", "*/*")) },
-                            onGoWifiTransfer = { selectedTab = 1 },
+                            onImportLocalFont = { fontPickerLauncher.launch(arrayOf("*/*")) },
+                            onStartWifiServer = {
+                                wifiServer.start().onFailure {
+                                    Toast.makeText(context, it.message ?: "启动失败", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            onStopWifiServer = { wifiServer.stop() },
+                            onRefreshWifiIp = { wifiServer.refreshUrl() },
+                            onSelectFont = { fontId ->
+                                scope.launch { repository.updateSettings { it.copy(selectedFontId = fontId) } }
+                            },
+                            onDeleteFont = { font ->
+                                scope.launch { repository.deleteFont(font.id) }
+                            },
+                            onDownloadCatalogFont = { catalogFont, onProgress ->
+                                runCatching { repository.downloadCatalogFont(catalogFont, onProgress) }
+                            },
                             onRenameBook = { book, newTitle ->
                                 scope.launch { repository.renameBook(book.id, newTitle) }
                             },
@@ -195,28 +268,26 @@ fun YueDuApp(
                                 scope.launch { repository.deleteBook(book.id) }
                             }
                         )
-                        else -> TransferAndSettingsScreen(
-                            isWifiRunning = isServerRunning,
-                            serverUrl = serverUrl,
-                            recentTransfers = recentTransfers,
-                            fonts = fonts,
-                            settings = settings,
-                            resolveTypeface = { repository.getTypeface(it) },
-                            onStartServer = {
-                                wifiServer.start().onFailure {
-                                    Toast.makeText(context, it.message ?: "启动失败", Toast.LENGTH_SHORT).show()
+                        else -> AiReadingSettingsScreen(
+                            ttsSettings = ttsSettings,
+                            readerSettings = settings,
+                            isTtsReady = isTtsReady,
+                            isTtsPlaying = isTtsPlaying,
+                            isTtsPaused = isTtsPaused,
+                            sleepRemainingSeconds = sleepRemainingSeconds,
+                            availableVoices = availableVoices,
+                            ttsError = ttsError,
+                            onUpdateTtsSettings = { transform ->
+                                scope.launch {
+                                    val next = repository.updateTtsSettings(transform)
+                                    ttsManager.updateLiveSettings(next)
                                 }
                             },
-                            onStopServer = { wifiServer.stop() },
-                            onRefreshIp = { wifiServer.refreshUrl() },
-                            onOpenUploadedBook = { bookId -> activeBookId = bookId },
-                            onImportLocalFont = { fontPickerLauncher.launch(arrayOf("*/*")) },
-                            onSelectFont = { fontId ->
-                                scope.launch { repository.updateSettings { it.copy(selectedFontId = fontId) } }
+                            onPreviewVoice = { ttsManager.previewVoice(ttsSettings) },
+                            onPauseResumeTts = {
+                                if (isTtsPaused) ttsManager.resume() else ttsManager.pause()
                             },
-                            onDeleteFont = { font ->
-                                scope.launch { repository.deleteFont(font.id) }
-                            },
+                            onStopTts = { ttsManager.stop() },
                             onChangeAppearance = { mode ->
                                 scope.launch { repository.updateSettings { it.copy(appAppearance = mode) } }
                             }
@@ -228,7 +299,7 @@ fun YueDuApp(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .navigationBarsPadding()
-                        .padding(horizontal = 40.dp, vertical = 14.dp)
+                        .padding(horizontal = 36.dp, vertical = 14.dp)
                 ) {
                     LiquidGlassFloatingTabBar(
                         tabs = tabs,

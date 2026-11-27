@@ -1,5 +1,14 @@
 package com.yuedu.reader.ui.screens
 
+import android.app.Activity
+import android.graphics.Typeface
+import android.view.WindowManager
+import android.widget.Toast
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -30,35 +39,55 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AutoStories
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.FontDownload
 import androidx.compose.material.icons.rounded.GridView
+import androidx.compose.material.icons.rounded.PowerSettingsNew
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.ViewAgenda
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.yuedu.reader.model.BookItem
+import com.yuedu.reader.model.CustomFont
+import com.yuedu.reader.model.DownloadableFont
+import com.yuedu.reader.model.ReaderSettings
+import com.yuedu.reader.model.TransferKind
+import com.yuedu.reader.model.WifiTransferLog
+import com.yuedu.reader.ui.components.FontManagerSheet
 import com.yuedu.reader.ui.components.LiquidGlassButton
 import com.yuedu.reader.ui.components.LiquidGlassSurface
 import com.yuedu.reader.ui.theme.BookCoverPalettes
@@ -67,20 +96,40 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BookshelfScreen(
     books: List<BookItem>,
+    fonts: List<CustomFont>,
+    settings: ReaderSettings,
+    isWifiRunning: Boolean,
+    wifiServerUrl: String?,
+    recentTransfers: List<WifiTransferLog>,
+    resolveTypeface: (String) -> Typeface,
     onOpenBook: (BookItem) -> Unit,
     onImportLocalBook: () -> Unit,
-    onGoWifiTransfer: () -> Unit,
+    onImportLocalFont: () -> Unit,
+    onStartWifiServer: () -> Unit,
+    onStopWifiServer: () -> Unit,
+    onRefreshWifiIp: () -> Unit,
+    onSelectFont: (String) -> Unit,
+    onDeleteFont: (CustomFont) -> Unit,
+    onDownloadCatalogFont: suspend (DownloadableFont, (Float) -> Unit) -> Result<CustomFont>,
     onRenameBook: (BookItem, String) -> Unit,
     onDeleteBook: (BookItem) -> Unit
 ) {
     val glass = LocalLiquidGlass.current
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+
     var query by remember { mutableStateOf("") }
     var isGridMode by remember { mutableStateOf(true) }
     var actionBook by remember { mutableStateOf<BookItem?>(null) }
     var renameText by remember { mutableStateOf("") }
+
+    var showImportMenu by remember { mutableStateOf(false) }
+    var showWifiSheet by remember { mutableStateOf(false) }
+    var showFontSheet by remember { mutableStateOf(false) }
 
     val filtered = remember(books, query) {
         val q = query.trim()
@@ -96,6 +145,7 @@ fun BookshelfScreen(
     ) {
         Spacer(modifier = Modifier.height(12.dp))
 
+        // Header: Title + View toggle + Unified Import Entry (NO separate Wi-Fi icon)
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -130,24 +180,12 @@ fun BookshelfScreen(
                 }
 
                 LiquidGlassButton(
-                    onClick = onGoWifiTransfer,
-                    modifier = Modifier.size(42.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Wifi,
-                        contentDescription = "Wi-Fi 传书",
-                        tint = glass.accent,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-
-                LiquidGlassButton(
-                    onClick = onImportLocalBook,
+                    onClick = { showImportMenu = true },
                     tint = glass.accent,
                     modifier = Modifier.height(42.dp)
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 14.dp),
+                        modifier = Modifier.padding(horizontal = 15.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
@@ -255,7 +293,7 @@ fun BookshelfScreen(
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "点击右上角「导入」选择本机 TXT，或去「传书设置」从电脑批量传书",
+                            text = "点击右上角「导入」选择本机文件或 Wi-Fi 传书传字体",
                             color = glass.textSecondary,
                             fontSize = 13.sp
                         )
@@ -293,6 +331,272 @@ fun BookshelfScreen(
                 }
             }
         }
+    }
+
+    // Unified Import Hub Sheet (Books + Fonts + Wi-Fi Transfer)
+    if (showImportMenu) {
+        val sheetBg = if (glass.isDark) Color(0xFF1A1C22) else Color(0xFFFFFFFF)
+        val cardBg = if (glass.isDark) Color(0xFF252830) else Color(0xFFF2F2F7)
+        ModalBottomSheet(
+            onDismissRequest = { showImportMenu = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = sheetBg
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 28.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "导入书籍与字体",
+                    color = glass.textPrimary,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+
+                ImportHubOption(
+                    icon = Icons.Rounded.Wifi,
+                    title = "Wi-Fi 传书与传字体",
+                    subtitle = "同 Wi-Fi 下电脑浏览器拖拽上传 .txt 书籍或字体",
+                    accent = glass.accent,
+                    bg = cardBg,
+                    textPrimary = glass.textPrimary,
+                    textSecondary = glass.textSecondary,
+                    onClick = {
+                        showImportMenu = false
+                        onStartWifiServer()
+                        showWifiSheet = true
+                    }
+                )
+
+                ImportHubOption(
+                    icon = Icons.Rounded.AutoStories,
+                    title = "本机导入 TXT 书籍",
+                    subtitle = "从手机文件夹选择纯文本书籍",
+                    accent = glass.accent,
+                    bg = cardBg,
+                    textPrimary = glass.textPrimary,
+                    textSecondary = glass.textSecondary,
+                    onClick = {
+                        showImportMenu = false
+                        onImportLocalBook()
+                    }
+                )
+
+                ImportHubOption(
+                    icon = Icons.Rounded.FontDownload,
+                    title = "字体库与本地导入字体",
+                    subtitle = "10 款免费可商用字体一键下载 + 本机导入 .ttf/.otf",
+                    accent = glass.accent,
+                    bg = cardBg,
+                    textPrimary = glass.textPrimary,
+                    textSecondary = glass.textSecondary,
+                    onClick = {
+                        showImportMenu = false
+                        showFontSheet = true
+                    }
+                )
+            }
+        }
+    }
+
+    // Wi-Fi Transfer Sheet (opened from + 导入)
+    if (showWifiSheet) {
+        val sheetBg = if (glass.isDark) Color(0xFF1A1C22) else Color(0xFFFFFFFF)
+        val cardBg = if (glass.isDark) Color(0xFF252830) else Color(0xFFF2F2F7)
+
+        LaunchedEffect(Unit) {
+            if (!isWifiRunning) onStartWifiServer() else onRefreshWifiIp()
+        }
+
+        DisposableEffect(Unit) {
+            val window = (context as? Activity)?.window
+            window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            onDispose { window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+        }
+
+        val pulseTransition = rememberInfiniteTransition(label = "wifiPulse")
+        val pulseAlpha by pulseTransition.animateFloat(
+            initialValue = 0.35f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
+            label = "wifiPulseAlpha"
+        )
+
+        ModalBottomSheet(
+            onDismissRequest = { showWifiSheet = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = sheetBg
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 28.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text("Wi-Fi 传书与传字体", color = glass.textPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .alpha(if (isWifiRunning) pulseAlpha else 1f)
+                                    .clip(CircleShape)
+                                    .background(if (isWifiRunning) glass.success else glass.textSecondary)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (isWifiRunning) "服务运行中 · 支持 .txt / .ttf / .otf" else "服务已暂停",
+                                color = if (isWifiRunning) glass.success else glass.textSecondary,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(if (isWifiRunning) cardBg else glass.accent)
+                            .clickable { if (isWifiRunning) onStopWifiServer() else onStartWifiServer() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Rounded.PowerSettingsNew,
+                            contentDescription = "开关服务",
+                            tint = if (isWifiRunning) glass.success else Color.White,
+                            modifier = Modifier.size(19.dp)
+                        )
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(glass.accentSoft)
+                        .padding(vertical = 14.dp, horizontal = 14.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = wifiServerUrl ?: "服务未启动",
+                        color = glass.accent,
+                        fontSize = 19.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(42.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(glass.accent)
+                            .clickable {
+                                if (wifiServerUrl != null) {
+                                    clipboard.setText(AnnotatedString(wifiServerUrl))
+                                    Toast.makeText(context, "已复制传书地址", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Rounded.ContentCopy, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("复制地址", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(42.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(cardBg)
+                            .clickable { onRefreshWifiIp() },
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Rounded.Refresh, contentDescription = null, tint = glass.textPrimary, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("刷新 IP", color = glass.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                    }
+                }
+
+                if (recentTransfers.isNotEmpty()) {
+                    Text("本次接收记录", color = glass.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    recentTransfers.take(5).forEach { log ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(cardBg)
+                                .clickable {
+                                    if (log.kind == TransferKind.BOOK) {
+                                        showWifiSheet = false
+                                        books.find { it.id == log.targetId }?.let(onOpenBook)
+                                    } else {
+                                        onSelectFont(log.targetId)
+                                        Toast.makeText(context, "已切换为新导入字体", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = if (log.kind == TransferKind.BOOK) Icons.Rounded.AutoStories else Icons.Rounded.FontDownload,
+                                contentDescription = null,
+                                tint = glass.accent,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = log.fileName,
+                                color = glass.textPrimary,
+                                fontSize = 13.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                text = if (log.kind == TransferKind.BOOK) "点击阅读" else "点击应用",
+                                color = glass.accent,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showFontSheet) {
+        FontManagerSheet(
+            fonts = fonts,
+            settings = settings,
+            resolveTypeface = resolveTypeface,
+            onSelectFont = onSelectFont,
+            onDeleteFont = onDeleteFont,
+            onImportLocalFont = onImportLocalFont,
+            onOpenWifiTransfer = {
+                onStartWifiServer()
+                showWifiSheet = true
+            },
+            onDownloadCatalogFont = onDownloadCatalogFont,
+            onDismiss = { showFontSheet = false }
+        )
     }
 
     actionBook?.let { book ->
@@ -339,9 +643,44 @@ fun BookshelfScreen(
     }
 }
 
-/**
- * Classic 3-column vertical portrait book cover (aspect ratio 0.68f ~ 2:3) with spine crease.
- */
+@Composable
+private fun ImportHubOption(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    accent: Color,
+    bg: Color,
+    textPrimary: Color,
+    textSecondary: Color,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(bg)
+            .clickable(onClick = onClick)
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(42.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(accent.copy(alpha = 0.14f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, contentDescription = null, tint = accent, modifier = Modifier.size(22.dp))
+        }
+        Spacer(modifier = Modifier.width(14.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = title, color = textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(text = subtitle, color = textSecondary, fontSize = 12.sp)
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PortraitBookItem(
@@ -372,7 +711,6 @@ private fun PortraitBookItem(
                 .background(Brush.verticalGradient(listOf(c1, c2)))
                 .border(0.6.dp, Color.White.copy(alpha = 0.28f), RoundedCornerShape(10.dp))
         ) {
-            // Subtle book spine crease on left edge
             Box(
                 modifier = Modifier
                     .width(9.dp)

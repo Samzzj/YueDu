@@ -10,10 +10,12 @@ import com.yuedu.reader.model.BookItem
 import com.yuedu.reader.model.BookmarkItem
 import com.yuedu.reader.model.ChapterInfo
 import com.yuedu.reader.model.CustomFont
+import com.yuedu.reader.model.DownloadableFont
 import com.yuedu.reader.model.ReaderSettings
 import com.yuedu.reader.model.ReaderTheme
 import com.yuedu.reader.model.ReadingMode
 import com.yuedu.reader.model.SearchHit
+import com.yuedu.reader.model.TtsSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -41,6 +43,7 @@ class BookRepository(private val context: Context) {
     private val booksMetaFile = File(context.filesDir, "books.json")
     private val fontsMetaFile = File(context.filesDir, "fonts.json")
     private val settingsMetaFile = File(context.filesDir, "settings.json")
+    private val ttsSettingsMetaFile = File(context.filesDir, "tts_settings.json")
     private val seedFlagFile = File(context.filesDir, ".seeded_v1")
 
     private val ioMutex = Mutex()
@@ -55,6 +58,9 @@ class BookRepository(private val context: Context) {
     private val _settings = MutableStateFlow(ReaderSettings())
     val settings: StateFlow<ReaderSettings> = _settings.asStateFlow()
 
+    private val _ttsSettings = MutableStateFlow(TtsSettings())
+    val ttsSettings: StateFlow<TtsSettings> = _ttsSettings.asStateFlow()
+
     suspend fun initialize() = withContext(Dispatchers.IO) {
         ioMutex.withLock {
             val loadedSettings = readSettingsLocked()
@@ -64,7 +70,7 @@ class BookRepository(private val context: Context) {
                 loadedSettings.selectedFontId
             }
             _settings.value = loadedSettings.copy(selectedFontId = normalizedFontId)
-
+            _ttsSettings.value = readTtsSettingsLocked()
             _fonts.value = builtInFonts() + readCustomFontsLocked()
 
             var booksChanged = false
@@ -175,42 +181,70 @@ class BookRepository(private val context: Context) {
         }
     }
 
-    suspend fun importFontFromTempFile(tempFile: File, originalFileName: String): CustomFont =
-        withContext(Dispatchers.IO) {
-            val cleanName = repairMojibakeIfNeeded(originalFileName)
-                .substringAfterLast('/')
-                .substringAfterLast('\\')
-            val ext = cleanName.substringAfterLast('.', "ttf").lowercase()
-            require(ext in listOf("ttf", "otf", "ttc")) { "仅支持 .ttf / .otf / .ttc 字体文件" }
-
-            val id = UUID.randomUUID().toString()
-            val destFile = File(fontsDir, "$id.$ext")
-            tempFile.copyTo(destFile, overwrite = true)
-
-            val tf = try {
-                Typeface.createFromFile(destFile)
-            } catch (e: Exception) {
-                destFile.delete()
-                throw IllegalArgumentException("字体文件无效或已损坏", e)
-            }
-
-            typefaceCache[id] = tf
-            val displayName = cleanName.substringBeforeLast('.').ifBlank { "自定义字体" }
-            val font = CustomFont(
-                id = id,
-                displayName = displayName,
-                fileName = cleanName,
-                filePath = destFile.absolutePath,
-                isBuiltIn = false
-            )
-
-            ioMutex.withLock {
-                val custom = readCustomFontsLocked() + font
-                writeCustomFontsLocked(custom)
-                _fonts.value = builtInFonts() + custom
-            }
-            font
+    suspend fun downloadCatalogFont(
+        catalogFont: DownloadableFont,
+        onProgress: (Float) -> Unit
+    ): CustomFont = withContext(Dispatchers.IO) {
+        val existing = _fonts.value.find { it.catalogId == catalogFont.id }
+        if (existing != null && File(existing.filePath).exists()) {
+            return@withContext existing
         }
+        val temp = File(context.cacheDir, "font_dl_${catalogFont.id}.tmp")
+        try {
+            CommercialFontsCatalog.downloadFontFile(catalogFont.downloadUrl, temp, onProgress)
+            importFontFromTempFile(
+                tempFile = temp,
+                originalFileName = catalogFont.fileName,
+                displayNameOverride = catalogFont.displayName,
+                catalogId = catalogFont.id
+            )
+        } finally {
+            temp.delete()
+        }
+    }
+
+    suspend fun importFontFromTempFile(
+        tempFile: File,
+        originalFileName: String,
+        displayNameOverride: String? = null,
+        catalogId: String? = null
+    ): CustomFont = withContext(Dispatchers.IO) {
+        val cleanName = repairMojibakeIfNeeded(originalFileName)
+            .substringAfterLast('/')
+            .substringAfterLast('\\')
+        val ext = cleanName.substringAfterLast('.', "ttf").lowercase()
+        require(ext in listOf("ttf", "otf", "ttc")) { "仅支持 .ttf / .otf / .ttc 字体文件" }
+
+        val id = UUID.randomUUID().toString()
+        val destFile = File(fontsDir, "$id.$ext")
+        tempFile.copyTo(destFile, overwrite = true)
+
+        val tf = try {
+            Typeface.createFromFile(destFile)
+        } catch (e: Exception) {
+            destFile.delete()
+            throw IllegalArgumentException("字体文件无效或已损坏", e)
+        }
+
+        typefaceCache[id] = tf
+        val displayName = displayNameOverride
+            ?: cleanName.substringBeforeLast('.').ifBlank { "自定义字体" }
+        val font = CustomFont(
+            id = id,
+            displayName = displayName,
+            fileName = cleanName,
+            filePath = destFile.absolutePath,
+            isBuiltIn = false,
+            catalogId = catalogId
+        )
+
+        ioMutex.withLock {
+            val custom = readCustomFontsLocked() + font
+            writeCustomFontsLocked(custom)
+            _fonts.value = builtInFonts() + custom
+        }
+        font
+    }
 
     fun getTypeface(fontId: String): Typeface {
         if (fontId == ReaderSettings.BUILTIN_SYSTEM_SANS) return Typeface.SANS_SERIF
@@ -347,6 +381,16 @@ class BookRepository(private val context: Context) {
                 val updated = transform(_settings.value)
                 _settings.value = updated
                 writeSettingsLocked(updated)
+            }
+        }
+
+    suspend fun updateTtsSettings(transform: (TtsSettings) -> TtsSettings): TtsSettings =
+        withContext(Dispatchers.IO) {
+            ioMutex.withLock {
+                val updated = transform(_ttsSettings.value)
+                _ttsSettings.value = updated
+                writeTtsSettingsLocked(updated)
+                updated
             }
         }
 
@@ -532,7 +576,8 @@ class BookRepository(private val context: Context) {
                                 fileName = repairMojibakeIfNeeded(o.getString("fileName")),
                                 filePath = path,
                                 addedAt = o.optLong("addedAt", System.currentTimeMillis()),
-                                isBuiltIn = false
+                                isBuiltIn = false,
+                                catalogId = o.optString("catalogId", "").ifBlank { null }
                             )
                         )
                     }
@@ -551,6 +596,7 @@ class BookRepository(private val context: Context) {
                     put("fileName", f.fileName)
                     put("filePath", f.filePath)
                     put("addedAt", f.addedAt)
+                    if (f.catalogId != null) put("catalogId", f.catalogId)
                 }
             )
         }
@@ -588,15 +634,43 @@ class BookRepository(private val context: Context) {
         settingsMetaFile.writeText(obj.toString(), StandardCharsets.UTF_8)
     }
 
+    private fun readTtsSettingsLocked(): TtsSettings {
+        if (!ttsSettingsMetaFile.exists()) return TtsSettings()
+        return runCatching {
+            val o = JSONObject(ttsSettingsMetaFile.readText(StandardCharsets.UTF_8))
+            TtsSettings(
+                speechRate = o.optDouble("speechRate", 1.0).toFloat(),
+                pitch = o.optDouble("pitch", 1.0).toFloat(),
+                voiceName = o.optString("voiceName", ""),
+                sleepTimerMinutes = o.optInt("sleepTimerMinutes", 0),
+                autoFollow = o.optBoolean("autoFollow", true),
+                highlightSentence = o.optBoolean("highlightSentence", true)
+            )
+        }.getOrDefault(TtsSettings())
+    }
+
+    private fun writeTtsSettingsLocked(s: TtsSettings) {
+        val obj = JSONObject().apply {
+            put("speechRate", s.speechRate.toDouble())
+            put("pitch", s.pitch.toDouble())
+            put("voiceName", s.voiceName)
+            put("sleepTimerMinutes", s.sleepTimerMinutes)
+            put("autoFollow", s.autoFollow)
+            put("highlightSentence", s.highlightSentence)
+        }
+        ttsSettingsMetaFile.writeText(obj.toString(), StandardCharsets.UTF_8)
+    }
+
     private fun buildWelcomeGuideText(): String = """
         第一章 欢迎来到悦读
 
-        欢迎体验「悦读」！这是一款专为纯文本阅读打造的极简阅读器。
+        欢迎体验「悦读」！这是一款纯净、舒适的离线 TXT 阅读器。
 
         核心功能一览：
-        1. 无缝翻章阅读：支持仿真翻页、平滑翻页与上下连续翻页，读完一章直接向后翻即可无缝进入下一章。
-        2. 书签与全书搜索：阅读界面顶部支持一键添加书签与全书关键词搜索跳转。
-        3. 传书与自定义字体：底部「传书设置」页支持同 Wi-Fi 电脑批量上传书籍和字体，也可从手机本地直接导入字体。
+        1. 无缝翻章与真实仿真翻页：支持 3D 曲面卷页仿真、平滑翻页与上下连续滚动，章节末尾直接往后翻即可无缝进入下一章。
+        2. 书签与全书搜索：阅读界面顶栏支持一键添加书签、全书搜索与本地 AI 语音朗读。
+        3. 本地 AI 语音朗读：自带系统本地 TTS 离线朗读引擎，支持倍速调节、音色切换、定时关闭、自动跟随翻页与句级高亮。
+        4. 免费可商用字体库：字体管理内置 10 款 SIL OFL 1.1 免费可商用中文字体一键下载，并支持本地与 Wi-Fi 导入字体。
 
         祝你阅读愉快！
     """.trimIndent()
