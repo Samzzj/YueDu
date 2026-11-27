@@ -305,7 +305,11 @@ class LocalTtsManager(context: Context) {
                 }
             }
 
-            else -> previewBuiltinYunxiFallback(sampleText, settings)
+            else -> {
+                previewJob = scope.launch {
+                    previewBuiltinYunxiFallback(sampleText, settings)
+                }
+            }
         }
     }
 
