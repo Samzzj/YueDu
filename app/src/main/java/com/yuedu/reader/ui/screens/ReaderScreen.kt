@@ -977,25 +977,6 @@ fun ReaderScreen(
                         )
                     }
 
-                    // Quick AI TTS Toggle
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .clickable {
-                                if (isTtsPlaying) onStopTts() else startTtsFromCurrentPosition()
-                                showControls = false
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = if (isTtsPlaying) Icons.Rounded.GraphicEq else Icons.Rounded.Headphones,
-                            contentDescription = "AI朗读",
-                            tint = if (isTtsPlaying) settings.theme.accentColor else settings.theme.textColor,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-
                     // In-Book Search
                     Box(
                         modifier = Modifier

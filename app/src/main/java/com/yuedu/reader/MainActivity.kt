@@ -96,12 +96,13 @@ fun YueDuApp(
     val serverUrl by wifiServer.serverUrl.collectAsState()
     val recentTransfers by wifiServer.recentTransfers.collectAsState()
 
-    val isTtsReady by ttsManager.isReady.collectAsState()
     val isTtsPlaying by ttsManager.isPlaying.collectAsState()
     val isTtsPaused by ttsManager.isPaused.collectAsState()
     val availableVoices by ttsManager.availableVoices.collectAsState()
     val activeTtsSentence by ttsManager.activeSentence.collectAsState()
     val sleepRemainingSeconds by ttsManager.sleepRemainingSeconds.collectAsState()
+    val downloadedPacks by ttsManager.downloadedPacks.collectAsState()
+    val packDownloadProgress by ttsManager.packDownloadProgress.collectAsState()
     val ttsError by ttsManager.errorMessage.collectAsState()
 
     var selectedTab by remember { mutableIntStateOf(0) }
@@ -223,7 +224,7 @@ fun YueDuApp(
             val tabs = remember {
                 listOf(
                     GlassTabItem("书架", Icons.Rounded.AutoStories),
-                    GlassTabItem("AI阅读设置", Icons.Rounded.GraphicEq)
+                    GlassTabItem("AI阅读", Icons.Rounded.GraphicEq)
                 )
             }
 
@@ -275,6 +276,8 @@ fun YueDuApp(
                             isTtsPaused = isTtsPaused,
                             sleepRemainingSeconds = sleepRemainingSeconds,
                             availableVoices = availableVoices,
+                            downloadedPacks = downloadedPacks,
+                            packDownloadProgress = packDownloadProgress,
                             ttsError = ttsError,
                             onUpdateTtsSettings = { transform ->
                                 scope.launch {
@@ -289,6 +292,18 @@ fun YueDuApp(
                                     if (!isTtsPlaying) {
                                         ttsManager.previewVoice(next)
                                     }
+                                }
+                            },
+                            onDownloadVoicePack = { packId ->
+                                scope.launch {
+                                    Toast.makeText(context, "开始下载离线语音包...", Toast.LENGTH_SHORT).show()
+                                    ttsManager.downloadOfflinePack(packId)
+                                        .onSuccess {
+                                            Toast.makeText(context, "语音包下载完成，已切换至本地离线合成", Toast.LENGTH_SHORT).show()
+                                        }
+                                        .onFailure {
+                                            Toast.makeText(context, "语音包下载失败：${it.message}", Toast.LENGTH_LONG).show()
+                                        }
                                 }
                             },
                             onPauseResumeTts = {

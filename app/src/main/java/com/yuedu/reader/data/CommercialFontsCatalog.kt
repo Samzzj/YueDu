@@ -8,8 +8,11 @@ import java.net.URL
 
 object CommercialFontsCatalog {
 
-    private fun jsDelivrAndGithubMirrors(ghOrgRepoBranchPath: String, releaseUrl: String? = null): List<String> {
-        // ghOrgRepoBranchPath e.g. "google/fonts@main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf"
+    /**
+     * Direct Mainland China accessible mirrors first (gh-proxy.com & gcore.jsdelivr.net)
+     * with short connect timeout so downloads start immediately without long hangs.
+     */
+    private fun chinaDirectMirrors(ghOrgRepoBranchPath: String, releaseUrl: String? = null): List<String> {
         val parts = ghOrgRepoBranchPath.split("@", limit = 2)
         val repo = parts[0]
         val branchAndPath = parts[1]
@@ -17,11 +20,9 @@ object CommercialFontsCatalog {
         val path = branchAndPath.substringAfter("/")
         val rawGithub = releaseUrl ?: "https://github.com/$repo/raw/$branch/$path"
         return listOf(
-            "https://fastly.jsdelivr.net/gh/$ghOrgRepoBranchPath",
+            "https://gh-proxy.com/$rawGithub",
             "https://gcore.jsdelivr.net/gh/$ghOrgRepoBranchPath",
-            "https://cdn.jsdelivr.net/gh/$ghOrgRepoBranchPath",
-            "https://ghfast.top/$rawGithub",
-            "https://gh-proxy.com/$rawGithub"
+            "https://cdn.jsdelivr.net/gh/$ghOrgRepoBranchPath"
         )
     }
 
@@ -32,7 +33,7 @@ object CommercialFontsCatalog {
             styleTag = "温润楷书 · 小说首选",
             sizeLabel = "18.2 MB",
             fileName = "LXGWWenKai-Regular.ttf",
-            downloadUrls = jsDelivrAndGithubMirrors(
+            downloadUrls = chinaDirectMirrors(
                 "lxgw/LxgwWenKai@v1.501/fonts/TTF/LXGWWenKai-Regular.ttf",
                 "https://github.com/lxgw/LxgwWenKai/releases/download/v1.501/LXGWWenKai-Regular.ttf"
             )
@@ -43,7 +44,7 @@ object CommercialFontsCatalog {
             styleTag = "等宽手写 · 清晰耐看",
             sizeLabel = "18.3 MB",
             fileName = "LXGWWenKaiMono-Regular.ttf",
-            downloadUrls = jsDelivrAndGithubMirrors(
+            downloadUrls = chinaDirectMirrors(
                 "lxgw/LxgwWenKai@v1.501/fonts/TTF/LXGWWenKaiMono-Regular.ttf",
                 "https://github.com/lxgw/LxgwWenKai/releases/download/v1.501/LXGWWenKaiMono-Regular.ttf"
             )
@@ -54,7 +55,7 @@ object CommercialFontsCatalog {
             styleTag = "现代黑体 · 极简清爽",
             sizeLabel = "17.0 MB",
             fileName = "NotoSansSC-Regular.ttf",
-            downloadUrls = jsDelivrAndGithubMirrors(
+            downloadUrls = chinaDirectMirrors(
                 "google/fonts@main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf"
             )
         ),
@@ -64,9 +65,7 @@ object CommercialFontsCatalog {
             styleTag = "经典宋体 · 出版质感",
             sizeLabel = "24.0 MB",
             fileName = "NotoSerifSC-Regular.ttf",
-            // >20MB exceeds jsDelivr single-file cap, route directly through China GitHub proxy mirrors
             downloadUrls = listOf(
-                "https://ghfast.top/https://github.com/google/fonts/raw/main/ofl/notoserifsc/NotoSerifSC%5Bwght%5D.ttf",
                 "https://gh-proxy.com/https://github.com/google/fonts/raw/main/ofl/notoserifsc/NotoSerifSC%5Bwght%5D.ttf"
             )
         ),
@@ -76,7 +75,7 @@ object CommercialFontsCatalog {
             styleTag = "优雅明体 · 标题正文皆宜",
             sizeLabel = "6.0 MB",
             fileName = "ZCOOLXiaoWei-Regular.ttf",
-            downloadUrls = jsDelivrAndGithubMirrors(
+            downloadUrls = chinaDirectMirrors(
                 "google/fonts@main/ofl/zcoolxiaowei/ZCOOLXiaoWei-Regular.ttf"
             )
         ),
@@ -86,7 +85,7 @@ object CommercialFontsCatalog {
             styleTag = "圆润活泼 · 轻松阅读",
             sizeLabel = "1.4 MB",
             fileName = "ZCOOLKuaiLe-Regular.ttf",
-            downloadUrls = jsDelivrAndGithubMirrors(
+            downloadUrls = chinaDirectMirrors(
                 "google/fonts@main/ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf"
             )
         ),
@@ -96,7 +95,7 @@ object CommercialFontsCatalog {
             styleTag = "圆角几何 · 现代感强",
             sizeLabel = "7.9 MB",
             fileName = "ZCOOLQingKeHuangYou-Regular.ttf",
-            downloadUrls = jsDelivrAndGithubMirrors(
+            downloadUrls = chinaDirectMirrors(
                 "google/fonts@main/ofl/zcoolqingkehuangyou/ZCOOLQingKeHuangYou-Regular.ttf"
             )
         ),
@@ -106,7 +105,7 @@ object CommercialFontsCatalog {
             styleTag = "手写毛笔 · 古风韵味",
             sizeLabel = "5.6 MB",
             fileName = "MaShanZheng-Regular.ttf",
-            downloadUrls = jsDelivrAndGithubMirrors(
+            downloadUrls = chinaDirectMirrors(
                 "google/fonts@main/ofl/mashanzheng/MaShanZheng-Regular.ttf"
             )
         ),
@@ -116,7 +115,7 @@ object CommercialFontsCatalog {
             styleTag = "潇洒行书 · 书法风格",
             sizeLabel = "3.9 MB",
             fileName = "ZhiMangXing-Regular.ttf",
-            downloadUrls = jsDelivrAndGithubMirrors(
+            downloadUrls = chinaDirectMirrors(
                 "google/fonts@main/ofl/zhimangxing/ZhiMangXing-Regular.ttf"
             )
         ),
@@ -126,7 +125,7 @@ object CommercialFontsCatalog {
             styleTag = "飘逸行楷 · 轻灵俊秀",
             sizeLabel = "4.9 MB",
             fileName = "LongCang-Regular.ttf",
-            downloadUrls = jsDelivrAndGithubMirrors(
+            downloadUrls = chinaDirectMirrors(
                 "google/fonts@main/ofl/longcang/LongCang-Regular.ttf"
             )
         )
@@ -149,10 +148,10 @@ object CommercialFontsCatalog {
                 lastError = e
             }
         }
-        throw lastError ?: IllegalStateException("所有国内下载镜像均连接失败，请检查网络")
+        throw lastError ?: IllegalStateException("镜像下载失败，请检查网络连接")
     }
 
-    private fun downloadSingleUrl(
+    fun downloadSingleUrl(
         urlStr: String,
         destFile: File,
         onProgress: (Float) -> Unit
@@ -165,9 +164,9 @@ object CommercialFontsCatalog {
             val url = URL(currentUrl)
             val c = (url.openConnection() as HttpURLConnection).apply {
                 instanceFollowRedirects = false
-                connectTimeout = 12_000
-                readTimeout = 25_000
-                setRequestProperty("User-Agent", "YueDu-Android/0.2.0")
+                connectTimeout = 5_000
+                readTimeout = 20_000
+                setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
             }
             val code = c.responseCode
             if (code in 300..399) {

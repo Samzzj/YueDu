@@ -1,15 +1,8 @@
-import java.security.KeyStore
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
-
-val debugKeystoreFile = file("debug.keystore")
-val debugKeyAlias: String = KeyStore.getInstance("PKCS12").apply {
-    debugKeystoreFile.inputStream().use { load(it, "android".toCharArray()) }
-}.aliases().toList().first()
 
 android {
     namespace = "com.yuedu.reader"
@@ -19,16 +12,20 @@ android {
         applicationId = "com.yuedu.reader"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.2.0"
+        versionCode = 6
+        versionName = "0.3.0"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     signingConfigs {
         getByName("debug") {
-            storeFile = debugKeystoreFile
+            storeFile = file("debug.keystore")
             storeType = "PKCS12"
             storePassword = "android"
-            keyAlias = debugKeyAlias
+            keyAlias = "androiddebugkey"
             keyPassword = "android"
         }
     }
@@ -68,6 +65,8 @@ android {
 }
 
 dependencies {
+    implementation(files("libs/sherpa-onnx-2.0.3.aar"))
+
     val composeBom = platform("androidx.compose:compose-bom:2024.11.00")
     implementation(composeBom)
 
@@ -86,4 +85,5 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.nanohttpd:nanohttpd:2.3.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("org.apache.commons:commons-compress:1.27.1")
 }

@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -27,6 +28,7 @@ import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
@@ -55,9 +57,12 @@ fun AiReadingSettingsScreen(
     isTtsPaused: Boolean,
     sleepRemainingSeconds: Int,
     availableVoices: List<TtsVoiceOption>,
+    downloadedPacks: Set<String>,
+    packDownloadProgress: Map<String, Float>,
     ttsError: String?,
     onUpdateTtsSettings: ((TtsSettings) -> TtsSettings) -> Unit,
     onSelectAndPreviewVoice: (TtsVoiceOption) -> Unit,
+    onDownloadVoicePack: (String) -> Unit,
     onPauseResumeTts: () -> Unit,
     onStopTts: () -> Unit,
     onChangeAppearance: (AppAppearance) -> Unit
@@ -81,21 +86,21 @@ fun AiReadingSettingsScreen(
             Spacer(modifier = Modifier.height(12.dp))
             Column {
                 Text(
-                    text = "AI 阅读设置",
+                    text = "AI 阅读",
                     color = glass.textPrimary,
                     fontSize = 32.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = (-0.8).sp
                 )
                 Text(
-                    text = "拟真情感音色 + 本地离线兜底，点击音色即可直接试听",
+                    text = "支持音色离线下载极速零延迟发声，点击音色即刻试听",
                     color = glass.textSecondary,
                     fontSize = 13.sp
                 )
             }
         }
 
-        // Active playback status bar (shown only when currently reading aloud)
+        // Active playback status bar (shown only when currently reading aloud or error occurs)
         if (isTtsPlaying || ttsError != null) {
             item {
                 Row(
@@ -124,7 +129,7 @@ fun AiReadingSettingsScreen(
                                 text = when {
                                     ttsError != null -> ttsError
                                     isTtsPaused -> "朗读已暂停"
-                                    else -> "正在后台朗读中"
+                                    else -> "正在朗读中"
                                 },
                                 color = if (ttsError != null) glass.danger else glass.textPrimary,
                                 fontSize = 14.sp,
@@ -174,7 +179,7 @@ fun AiReadingSettingsScreen(
             }
         }
 
-        // Speech Rate & Pitch Sliders
+        // Speech Rate Slider (Pitch removed per user request)
         item {
             Column(
                 modifier = Modifier
@@ -237,36 +242,6 @@ fun AiReadingSettingsScreen(
                         }
                     }
                 }
-
-                Spacer(modifier = Modifier.height(4.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("声音音调", color = glass.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        text = String.format(Locale.US, "%.1f", ttsSettings.pitch),
-                        color = glass.accent,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-
-                Slider(
-                    value = ttsSettings.pitch,
-                    onValueChange = { raw ->
-                        val stepped = kotlin.math.round(raw * 10f) / 10f
-                        onUpdateTtsSettings { it.copy(pitch = stepped.coerceIn(0.7f, 1.4f)) }
-                    },
-                    valueRange = 0.7f..1.4f,
-                    colors = SliderDefaults.colors(
-                        thumbColor = glass.accent,
-                        activeTrackColor = glass.accent,
-                        inactiveTrackColor = subPillBg
-                    )
-                )
             }
         }
 
@@ -373,7 +348,7 @@ fun AiReadingSettingsScreen(
             }
         }
 
-        // Voices Selector (Tap any voice to select & immediately preview!)
+        // Voices Selector (Tap voice to select & immediately preview; Download button for local offline synthesis)
         item {
             Column(
                 modifier = Modifier
@@ -396,7 +371,7 @@ fun AiReadingSettingsScreen(
                         fontWeight = FontWeight.SemiBold
                     )
                     Text(
-                        text = "点击音色即刻试听",
+                        text = "下载到本地后零延迟",
                         color = glass.accent,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Medium
@@ -405,7 +380,11 @@ fun AiReadingSettingsScreen(
 
                 availableVoices.forEach { voice ->
                     val selected = ttsSettings.voiceId == voice.id
-                    Row(
+                    val packId = voice.offlinePackId
+                    val progress = packId?.let { packDownloadProgress[it] }
+                    val isDownloaded = packId != null && packId in downloadedPacks
+
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
@@ -416,37 +395,119 @@ fun AiReadingSettingsScreen(
                                 shape = RoundedCornerShape(12.dp)
                             )
                             .clickable { onSelectAndPreviewVoice(voice) }
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                            .padding(horizontal = 14.dp, vertical = 12.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.VolumeUp,
-                            contentDescription = null,
-                            tint = if (selected) glass.accent else glass.textSecondary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = voice.displayLabel,
-                                color = glass.textPrimary,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = voice.styleTag,
-                                color = glass.textSecondary,
-                                fontSize = 11.sp
-                            )
-                        }
-                        if (selected) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Icon(
-                                Icons.Rounded.CheckCircle,
-                                contentDescription = "已选中",
-                                tint = glass.accent,
-                                modifier = Modifier.size(20.dp)
+                                imageVector = if (selected) Icons.Rounded.CheckCircle else Icons.Rounded.VolumeUp,
+                                contentDescription = null,
+                                tint = if (selected) glass.accent else glass.textSecondary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = voice.displayLabel,
+                                    color = glass.textPrimary,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = voice.styleTag,
+                                    color = glass.textSecondary,
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.width(8.dp))
+
+                            if (packId != null) {
+                                when {
+                                    progress != null -> {
+                                        Text(
+                                            text = "下载中 ${(progress * 100).toInt()}%",
+                                            color = glass.accent,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(999.dp))
+                                                .background(cardBackground)
+                                                .padding(horizontal = 10.dp, vertical = 5.dp)
+                                        )
+                                    }
+
+                                    isDownloaded -> {
+                                        Text(
+                                            text = "已离线",
+                                            color = Color(0xFF28A745),
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(999.dp))
+                                                .background(Color(0xFF28A745).copy(alpha = 0.14f))
+                                                .padding(horizontal = 10.dp, vertical = 5.dp)
+                                        )
+                                    }
+
+                                    else -> {
+                                        Row(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(999.dp))
+                                                .background(glass.accent)
+                                                .clickable { onDownloadVoicePack(packId) }
+                                                .padding(horizontal = 10.dp, vertical = 5.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Download,
+                                                contentDescription = "下载到本地",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(13.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                text = if (voice.offlineSizeLabel.isNotBlank()) {
+                                                    "下载到本地 ${voice.offlineSizeLabel}"
+                                                } else {
+                                                    "下载到本地"
+                                                },
+                                                color = Color.White,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+                                    }
+                                }
+                            } else {
+                                Text(
+                                    text = "系统内置",
+                                    color = glass.textSecondary,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(999.dp))
+                                        .background(cardBackground)
+                                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                                )
+                            }
+                        }
+
+                        if (progress != null) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            LinearProgressIndicator(
+                                progress = { progress.coerceIn(0f, 1f) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(3.dp)
+                                    .clip(RoundedCornerShape(999.dp)),
+                                color = glass.accent,
+                                trackColor = cardBackground
                             )
                         }
                     }

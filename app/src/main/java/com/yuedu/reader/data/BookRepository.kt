@@ -640,7 +640,6 @@ class BookRepository(private val context: Context) {
             val o = JSONObject(ttsSettingsMetaFile.readText(StandardCharsets.UTF_8))
             TtsSettings(
                 speechRate = o.optDouble("speechRate", 1.0).toFloat(),
-                pitch = o.optDouble("pitch", 1.0).toFloat(),
                 voiceId = o.optString("voiceId", "edge:zh-CN-XiaoxiaoNeural"),
                 sleepTimerMinutes = o.optInt("sleepTimerMinutes", 0),
                 autoFollow = o.optBoolean("autoFollow", true),
@@ -652,7 +651,6 @@ class BookRepository(private val context: Context) {
     private fun writeTtsSettingsLocked(s: TtsSettings) {
         val obj = JSONObject().apply {
             put("speechRate", s.speechRate.toDouble())
-            put("pitch", s.pitch.toDouble())
             put("voiceId", s.voiceId)
             put("sleepTimerMinutes", s.sleepTimerMinutes)
             put("autoFollow", s.autoFollow)

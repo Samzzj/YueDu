@@ -17,12 +17,13 @@ import java.util.Locale
 import java.util.TimeZone
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /**
- * Port of GitHub `rany2/edge-tts` (v7.3+ Sec-MS-GEC v2 protocol) in Kotlin + OkHttp,
- * providing expressive, human-like Chinese neural voices without external server setup.
+ * Crash-safe Kotlin port of GitHub `rany2/edge-tts` (v7.3+ Sec-MS-GEC v2 protocol),
+ * used as instant online preview / fallback before an offline voice pack is downloaded.
  */
 object EdgeNeuralTtsEngine {
 
@@ -34,103 +35,144 @@ object EdgeNeuralTtsEngine {
     private const val WSS_URL = "wss://$BASE_URL/edge/v1?TrustedClientToken=$TRUSTED_CLIENT_TOKEN"
 
     val neuralVoices: List<TtsVoiceOption> = listOf(
+        // Kokoro v1.0 离线全系列（下载后 100% 离线，未下载前自动用 Edge 拟真在线）
         TtsVoiceOption(
             id = "edge:zh-CN-XiaoxiaoNeural",
             engineVoiceName = "zh-CN-XiaoxiaoNeural",
             displayLabel = "晓晓",
-            styleTag = "AI 拟真 · 温暖自然女声（推荐）",
-            isNeural = true
+            styleTag = "温暖自然 · 小说女声",
+            isNeural = true,
+            offlinePackId = SherpaOfflineTtsEngine.PACK_KOKORO_V1_0,
+            offlineSid = 47,
+            offlineSizeLabel = "126MB"
         ),
         TtsVoiceOption(
             id = "edge:zh-CN-YunxiNeural",
             engineVoiceName = "zh-CN-YunxiNeural",
             displayLabel = "云希",
-            styleTag = "AI 拟真 · 阳光青年小说男声",
-            isNeural = true
+            styleTag = "阳光青年 · 热门小说男声",
+            isNeural = true,
+            offlinePackId = SherpaOfflineTtsEngine.PACK_KOKORO_V1_0,
+            offlineSid = 50,
+            offlineSizeLabel = "126MB"
         ),
         TtsVoiceOption(
             id = "edge:zh-CN-YunjianNeural",
             engineVoiceName = "zh-CN-YunjianNeural",
             displayLabel = "云健",
-            styleTag = "AI 拟真 · 热血沉稳旁白男声",
-            isNeural = true
+            styleTag = "热血沉稳 · 悬疑玄幻旁白",
+            isNeural = true,
+            offlinePackId = SherpaOfflineTtsEngine.PACK_KOKORO_V1_0,
+            offlineSid = 49,
+            offlineSizeLabel = "126MB"
         ),
         TtsVoiceOption(
             id = "edge:zh-CN-XiaoyiNeural",
             engineVoiceName = "zh-CN-XiaoyiNeural",
             displayLabel = "晓伊",
-            styleTag = "AI 拟真 · 甜美灵动女声",
-            isNeural = true
+            styleTag = "甜美灵动 · 青春女声",
+            isNeural = true,
+            offlinePackId = SherpaOfflineTtsEngine.PACK_KOKORO_V1_0,
+            offlineSid = 48,
+            offlineSizeLabel = "126MB"
         ),
         TtsVoiceOption(
             id = "edge:zh-CN-YunxiaNeural",
             engineVoiceName = "zh-CN-YunxiaNeural",
             displayLabel = "云夏",
-            styleTag = "AI 拟真 · 清亮少年音色",
-            isNeural = true
+            styleTag = "清亮少年 · 轻小说音色",
+            isNeural = true,
+            offlinePackId = SherpaOfflineTtsEngine.PACK_KOKORO_V1_0,
+            offlineSid = 51,
+            offlineSizeLabel = "126MB"
         ),
         TtsVoiceOption(
             id = "edge:zh-CN-YunyangNeural",
             engineVoiceName = "zh-CN-YunyangNeural",
             displayLabel = "云扬",
-            styleTag = "AI 拟真 · 沉稳专业播音男声",
-            isNeural = true
+            styleTag = "沉稳播音 · 纪实历史男声",
+            isNeural = true,
+            offlinePackId = SherpaOfflineTtsEngine.PACK_KOKORO_V1_0,
+            offlineSid = 52,
+            offlineSizeLabel = "126MB"
         ),
         TtsVoiceOption(
-            id = "edge:zh-CN-XiaochenNeural",
+            id = "edge:zh-CN-liaoning-XiaobeiNeural",
+            engineVoiceName = "zh-CN-liaoning-XiaobeiNeural",
+            displayLabel = "晓北",
+            styleTag = "爽朗亲切 · 活力女声",
+            isNeural = true,
+            offlinePackId = SherpaOfflineTtsEngine.PACK_KOKORO_V1_0,
+            offlineSid = 45,
+            offlineSizeLabel = "126MB"
+        ),
+        TtsVoiceOption(
+            id = "edge:zh-CN-shaanxi-XiaoniNeural",
+            engineVoiceName = "zh-CN-shaanxi-XiaoniNeural",
+            displayLabel = "晓妮",
+            styleTag = "温婉叙事 · 故事女声",
+            isNeural = true,
+            offlinePackId = SherpaOfflineTtsEngine.PACK_KOKORO_V1_0,
+            offlineSid = 46,
+            offlineSizeLabel = "126MB"
+        ),
+        // 轻量 30MB AISHELL 离线多音色（小包极速下载）
+        TtsVoiceOption(
+            id = "aishell:10",
             engineVoiceName = "zh-CN-XiaochenNeural",
-            displayLabel = "晓辰",
-            styleTag = "AI 拟真 · 亲切娓娓叙事女声",
-            isNeural = true
+            displayLabel = "艾雪（轻量离线版）",
+            styleTag = "知性清雅 · 30MB 极速离线包",
+            isNeural = true,
+            offlinePackId = SherpaOfflineTtsEngine.PACK_AISHELL3,
+            offlineSid = 10,
+            offlineSizeLabel = "30MB"
         ),
         TtsVoiceOption(
-            id = "edge:zh-CN-XiaohanNeural",
-            engineVoiceName = "zh-CN-XiaohanNeural",
-            displayLabel = "晓涵",
-            styleTag = "AI 拟真 · 优雅知性情感女声",
-            isNeural = true
-        ),
-        TtsVoiceOption(
-            id = "edge:zh-CN-XiaomengNeural",
-            engineVoiceName = "zh-CN-XiaomengNeural",
-            displayLabel = "晓梦",
-            styleTag = "AI 拟真 · 温柔软萌女声",
-            isNeural = true
-        ),
-        TtsVoiceOption(
-            id = "edge:zh-CN-YunfengNeural",
+            id = "aishell:25",
             engineVoiceName = "zh-CN-YunfengNeural",
-            displayLabel = "云枫",
-            styleTag = "AI 拟真 · 磁性低沉古风男声",
-            isNeural = true
+            displayLabel = "晨宇（轻量离线版）",
+            styleTag = "温和青年 · 30MB 极速离线包",
+            isNeural = true,
+            offlinePackId = SherpaOfflineTtsEngine.PACK_AISHELL3,
+            offlineSid = 25,
+            offlineSizeLabel = "30MB"
+        ),
+        // 72MB Matcha 自然女声
+        TtsVoiceOption(
+            id = "matcha:baker",
+            engineVoiceName = "zh-CN-XiaohanNeural",
+            displayLabel = "小贝（自然旁白）",
+            styleTag = "温润流畅 · 72MB 独立离线包",
+            isNeural = true,
+            offlinePackId = SherpaOfflineTtsEngine.PACK_MATCHA_BAKER,
+            offlineSid = 0,
+            offlineSizeLabel = "72MB"
         )
     )
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
-        .writeTimeout(10, TimeUnit.SECONDS)
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(12, TimeUnit.SECONDS)
+        .writeTimeout(8, TimeUnit.SECONDS)
         .build()
 
     suspend fun synthesizeToMp3Bytes(
         text: String,
         voiceName: String,
-        speechRate: Float,
-        pitch: Float
+        speechRate: Float
     ): ByteArray {
         return try {
-            executeSynthesis(text, voiceName, speechRate, pitch)
+            executeSynthesis(text, voiceName, speechRate)
         } catch (e: SkewException) {
             EdgeDrm.adjustClockSkew(e.serverDateHeader)
-            executeSynthesis(text, voiceName, speechRate, pitch)
+            executeSynthesis(text, voiceName, speechRate)
         }
     }
 
     private suspend fun executeSynthesis(
         text: String,
         voiceName: String,
-        speechRate: Float,
-        pitch: Float
+        speechRate: Float
     ): ByteArray = suspendCancellableCoroutine { cont ->
         val connId = UUID.randomUUID().toString().replace("-", "")
         val gec = EdgeDrm.generateSecMsGecV2()
@@ -150,7 +192,7 @@ object EdgeNeuralTtsEngine {
             .build()
 
         val audioStream = ByteArrayOutputStream()
-        var completed = false
+        val finished = AtomicBoolean(false)
 
         val ws = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -164,12 +206,10 @@ object EdgeNeuralTtsEngine {
 
                 val ratePct = ((speechRate - 1.0f) * 100f).toInt()
                 val rateStr = if (ratePct >= 0) "+$ratePct%" else "$ratePct%"
-                val pitchHz = ((pitch - 1.0f) * 50f).toInt()
-                val pitchStr = if (pitchHz >= 0) "+${pitchHz}Hz" else "${pitchHz}Hz"
                 val escaped = escapeXml(cleanText(text))
                 val ssml = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='zh-CN'>" +
                     "<voice name='$voiceName'>" +
-                    "<prosody pitch='$pitchStr' rate='$rateStr' volume='+0%'>$escaped</prosody>" +
+                    "<prosody pitch='+0Hz' rate='$rateStr' volume='+0%'>$escaped</prosody>" +
                     "</voice></speak>"
                 val reqId = UUID.randomUUID().toString().replace("-", "")
                 val ssmlMsg = "X-RequestId:$reqId\r\n" +
@@ -181,11 +221,10 @@ object EdgeNeuralTtsEngine {
             }
 
             override fun onMessage(webSocket: WebSocket, textMsg: String) {
-                if (textMsg.contains("Path:turn.end")) {
-                    if (!completed) {
-                        completed = true
-                        webSocket.close(1000, "done")
-                        val bytes = audioStream.toByteArray()
+                if (textMsg.contains("Path:turn.end") && finished.compareAndSet(false, true)) {
+                    runCatching { webSocket.close(1000, "done") }
+                    val bytes = synchronized(audioStream) { audioStream.toByteArray() }
+                    if (cont.isActive) {
                         if (bytes.isEmpty()) {
                             cont.resumeWithException(IllegalStateException("未收到音频数据"))
                         } else {
@@ -201,16 +240,17 @@ object EdgeNeuralTtsEngine {
                 val headerLen = ((raw[0].toInt() and 0xFF) shl 8) or (raw[1].toInt() and 0xFF)
                 val dataOffset = headerLen + 2
                 if (dataOffset <= raw.size) {
-                    val headerStr = String(raw, 2, headerLen.coerceAtMost(raw.size - 2), StandardCharsets.UTF_8)
+                    val headerStr = String(raw, 2, headerLen, StandardCharsets.UTF_8)
                     if (headerStr.contains("Path:audio") && headerStr.contains("Content-Type:audio/mpeg")) {
-                        audioStream.write(raw, dataOffset, raw.size - dataOffset)
+                        synchronized(audioStream) {
+                            audioStream.write(raw, dataOffset, raw.size - dataOffset)
+                        }
                     }
                 }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (!completed) {
-                    completed = true
+                if (finished.compareAndSet(false, true) && cont.isActive) {
                     val dateHdr = response?.header("Date")
                     if (response?.code == 403 && dateHdr != null) {
                         cont.resumeWithException(SkewException(dateHdr, t))
@@ -221,19 +261,19 @@ object EdgeNeuralTtsEngine {
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (!completed) {
-                    completed = true
-                    val bytes = audioStream.toByteArray()
+                if (finished.compareAndSet(false, true) && cont.isActive) {
+                    val bytes = synchronized(audioStream) { audioStream.toByteArray() }
                     if (bytes.isNotEmpty()) {
                         cont.resume(bytes)
                     } else {
-                        cont.resumeWithException(IllegalStateException("连接提前关闭: $reason"))
+                        cont.resumeWithException(IllegalStateException("连接关闭: $reason"))
                     }
                 }
             }
         })
 
         cont.invokeOnCancellation {
+            finished.set(true)
             runCatching { ws.cancel() }
         }
     }
@@ -262,13 +302,9 @@ object EdgeNeuralTtsEngine {
         return fmt.format(Date())
     }
 
-    /**
-     * Exact Kotlin port of `rany2/edge-tts/src/edge_tts/drm.py` v2 token generator.
-     */
     private object EdgeDrm {
         @Volatile
         private var clockSkewSeconds: Double = 0.0
-
         private const val WIN_EPOCH = 11644473600L
 
         private val SHA256_INITIAL = uintArrayOf(
@@ -303,20 +339,13 @@ object EdgeNeuralTtsEngine {
         private const val SHA256_SIGMA1_ADJUSTMENT = 0x000B92C0u
 
         private val CS64_COEFFICIENTS = arrayOf(
-            0xE82E91B1u to 0xB32700D0u,
-            0x44DE24C6u to 0x88DFF51Du,
-            0x3BEB65BCu to 0x29514038u,
-            0xC89C5933u to 0xB328CBDFu,
-            0x8D1EC211u to 0xD405B4D5u,
-            0x314EF5D5u to 0x26E55F3Cu,
-            0xE92491B1u to 0x607801C6u,
-            0xF0A5B9D5u to 0x82B2C1FBu,
-            0x06064CF3u to 0xFA51A3DAu,
-            0xDA79FA60u to 0x207CC464u,
-            0xBED20560u to 0x3C3C74F3u,
-            0x89F9C9F8u to 0xD2D14B61u,
-            0x35FA38C6u to 0xBB04A2C1u,
-            0xCB49E3C6u to 0xC5626167u
+            0xE82E91B1u to 0xB32700D0u, 0x44DE24C6u to 0x88DFF51Du,
+            0x3BEB65BCu to 0x29514038u, 0xC89C5933u to 0xB328CBDFu,
+            0x8D1EC211u to 0xD405B4D5u, 0x314EF5D5u to 0x26E55F3Cu,
+            0xE92491B1u to 0x607801C6u, 0xF0A5B9D5u to 0x82B2C1FBu,
+            0x06064CF3u to 0xFA51A3DAu, 0xDA79FA60u to 0x207CC464u,
+            0xBED20560u to 0x3C3C74F3u, 0x89F9C9F8u to 0xD2D14B61u,
+            0x35FA38C6u to 0xBB04A2C1u, 0xCB49E3C6u to 0xC5626167u
         )
         private const val CS64_FACTOR = 0x82893933u
         private const val CS64_ADJUSTMENT0 = 0xF2F90B1Au
@@ -363,21 +392,13 @@ object EdgeNeuralTtsEngine {
 
         private fun rotr(x: UInt, n: Int): UInt = (x shr n) or (x shl (32 - n))
         private fun rol16(v: UInt): UInt = (v shl 16) or (v shr 16)
-
         private fun sigma0(x: UInt): UInt = (x shr 7) xor (x shl 25) xor (x shr 18) xor (x shl 14) xor (x shr 3)
         private fun sigma1(x: UInt): UInt = (x shr 17) xor (x shl 15) xor (x shr 19) xor (x shl 13) xor (x shr 10)
 
         private fun sha256Rounds(state: UIntArray, words: UIntArray, firstRound: Int = 0): UIntArray {
-            var a = state[0]
-            var b = state[1]
-            var c = state[2]
-            var d = state[3]
-            var e = state[4]
-            var f = state[5]
-            var g = state[6]
-            var h = state[7]
+            var a = state[0]; var b = state[1]; var c = state[2]; var d = state[3]
+            var e = state[4]; var f = state[5]; var g = state[6]; var h = state[7]
             val constants = if (firstRound == 14) SHA256_BLOCK_CONSTANTS else SHA256_ROUND_CONSTANTS
-
             for (i in firstRound until 64) {
                 val s1 = rotr(e, 6) xor rotr(e, 11) xor rotr(e, 25)
                 val ch = (e and f) xor ((e.inv()) and g)
@@ -385,14 +406,7 @@ object EdgeNeuralTtsEngine {
                 val s0 = rotr(a, 2) xor rotr(a, 13) xor rotr(a, 22)
                 val maj = (a and b) xor (a and c) xor (b and c)
                 val t2 = s0 + maj
-                h = g
-                g = f
-                f = e
-                e = d + t1
-                d = c
-                c = b
-                b = a
-                a = t1 + t2
+                h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2
             }
             return uintArrayOf(a, b, c, d, e, f, g, h)
         }
@@ -415,15 +429,9 @@ object EdgeNeuralTtsEngine {
 
             for (idx in 16 until 30) {
                 var value = SHA256_SCHEDULE[idx - 16]
-                if (idx - 2 >= 14) {
-                    value += if (idx == 16) (sigma1(words[idx - 2]) xor SHA256_SIGMA1_ADJUSTMENT) else sigma1(words[idx - 2])
-                }
-                if (idx - 7 >= 14) {
-                    value += words[idx - 7]
-                }
-                if (idx - 15 >= 14) {
-                    value += if (idx == 29) (sigma0(words[idx - 15]) xor SHA256_SIGMA0_ADJUSTMENT) else sigma0(words[idx - 15])
-                }
+                if (idx - 2 >= 14) value += if (idx == 16) (sigma1(words[idx - 2]) xor SHA256_SIGMA1_ADJUSTMENT) else sigma1(words[idx - 2])
+                if (idx - 7 >= 14) value += words[idx - 7]
+                if (idx - 15 >= 14) value += if (idx == 29) (sigma0(words[idx - 15]) xor SHA256_SIGMA0_ADJUSTMENT) else sigma0(words[idx - 15])
                 words[idx] = value
             }
             words[30] = sigma1(words[28]) + words[23] + sigma0(words[15]) + words[14] +
@@ -459,9 +467,7 @@ object EdgeNeuralTtsEngine {
                 }
                 expandSchedule(words, 16)
                 val working = sha256Rounds(state, words, 0)
-                for (i in 0 until 8) {
-                    state[i] = state[i] + working[i]
-                }
+                for (i in 0 until 8) state[i] = state[i] + working[i]
                 offset += 64
             }
 
@@ -483,11 +489,12 @@ object EdgeNeuralTtsEngine {
             val list = ArrayList<UInt>(padded.size / 4 + 1)
             var i = 0
             while (i < padded.size) {
-                val w = ((padded[i].toInt() and 0xFF) or
-                    ((padded[i + 1].toInt() and 0xFF) shl 8) or
-                    ((padded[i + 2].toInt() and 0xFF) shl 16) or
-                    ((padded[i + 3].toInt() and 0xFF) shl 24)).toUInt()
-                list.add(w)
+                list.add(
+                    ((padded[i].toInt() and 0xFF) or
+                        ((padded[i + 1].toInt() and 0xFF) shl 8) or
+                        ((padded[i + 2].toInt() and 0xFF) shl 16) or
+                        ((padded[i + 3].toInt() and 0xFF) shl 24)).toUInt()
+                )
                 i += 4
             }
             if (list.size % 2 != 0) list.add(0u)
@@ -495,18 +502,13 @@ object EdgeNeuralTtsEngine {
         }
 
         private fun cs64Digest(data: ByteArray, digest: ByteArray): Pair<UInt, UInt> {
-            val keyA = (((digest[0].toInt() and 0xFF) or
-                ((digest[1].toInt() and 0xFF) shl 8) or
-                ((digest[2].toInt() and 0xFF) shl 16) or
-                ((digest[3].toInt() and 0xFF) shl 24)).toUInt()) or 1u
-            val keyB = (((digest[4].toInt() and 0xFF) or
-                ((digest[5].toInt() and 0xFF) shl 8) or
-                ((digest[6].toInt() and 0xFF) shl 16) or
-                ((digest[7].toInt() and 0xFF) shl 24)).toUInt()) or 1u
+            val keyA = (((digest[0].toInt() and 0xFF) or ((digest[1].toInt() and 0xFF) shl 8) or
+                ((digest[2].toInt() and 0xFF) shl 16) or ((digest[3].toInt() and 0xFF) shl 24)).toUInt()) or 1u
+            val keyB = (((digest[4].toInt() and 0xFF) or ((digest[5].toInt() and 0xFF) shl 8) or
+                ((digest[6].toInt() and 0xFF) shl 16) or ((digest[7].toInt() and 0xFF) shl 24)).toUInt()) or 1u
 
             val factor0 = keyA * CS64_FACTOR
             val factor1 = keyB * CS64_FACTOR
-
             val terms = ArrayList<UInt>(32)
             val offsets = ArrayList<UInt>(32)
             CS64_COEFFICIENTS.forEachIndexed { idx, (coeff, off) ->
@@ -527,14 +529,10 @@ object EdgeNeuralTtsEngine {
                 offsets.add(off)
             }
 
-            var swapAcc = 0u
-            var swapLast = 0u
-            var state = 0u
-            var acc = 0u
+            var swapAcc = 0u; var swapLast = 0u; var state = 0u; var acc = 0u
             var idx = 0
             while (idx < terms.size) {
-                val x = terms[idx]
-                val y = terms[idx + 1]
+                val x = terms[idx]; val y = terms[idx + 1]
                 var t = rol16(offsets[idx] + x)
                 var q = t * 0x76F50F34u
                 swapAcc += rol16(q) * 0xC3EFEA97u + q
