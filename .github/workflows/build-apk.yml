@@ -69,32 +69,33 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Debug APK
-        run: gradle assembleDebug --no-daemon
+      - name: Build Release APK
+        run: gradle assembleRelease --no-daemon
 
       - name: Rename and Verify APK
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk YueDu-v0.9.0-debug.apk
+          cp app/build/outputs/apk/release/app-release.apk YueDu-v1.0.apk
           APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n1)
-          "$APKSIGNER" verify --print-certs YueDu-v0.9.0-debug.apk
+          "$APKSIGNER" verify --print-certs YueDu-v1.0.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: YueDu-v0.9.0-debug-apk
-          path: YueDu-v0.9.0-debug.apk
+          name: YueDu-v1.0-apk
+          path: YueDu-v1.0.apk
 
-      - name: Publish v0.9.0 Release
+      - name: Publish v1.0 Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.9.0-preview
-          name: 悦读 YueDu v0.9.0
+          tag_name: v1.0
+          name: YueDu v1.0
           body: |
-            悦读 YueDu v0.9.0 更新内容：
-            - AI 音色全面重构接入香港 VPS Edge ReadAloud 网关：统一微软原声（云希/晓晓/云健/晓伊/云扬/晓臻/晓北/晓妮/云夏），服务端与手机端双重缓存
-            - 彻底移除原本音色不一致的离线 VITS 模型包，改为「同音色章节离线下载」：试听、在线听书、离线下载播放 100% 为同一 Edge ReadAloud 原声
-            - 在「AI 阅读」页与阅读器听书悬浮条新增一键下载后续 5 章离线音频与缓存管理
-          files: YueDu-v0.9.0-debug.apk
-          prerelease: true
+            YueDu v1.0 正式版：
+            - 彻底重构 AI 朗读后台内核：章节切换、空章自动跳过与进度保存完全脱离 UI 界面生命周期，锁屏或切出页面换章不再卡顿静音
+            - 修复重新进入正在朗读的书籍时高亮未自动对齐/自动翻页的 Bug，同步支持跨章自动跟翻
+            - 返回书架不中断后台听书，书架底部新增“正在听书悬浮条”，点击一键直达正在朗读的章节和页码
+            - 接入香港 VPS Edge ReadAloud 统一音色网关与同音色章节离线缓存下载（试听、在线听、离线缓存 100% 同音色）
+          files: YueDu-v1.0.apk
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

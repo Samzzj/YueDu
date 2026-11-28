@@ -9,13 +9,29 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoStories
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -28,8 +44,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.yuedu.reader.data.BookRepository
 import com.yuedu.reader.model.BookItem
 import com.yuedu.reader.model.TransferKind
@@ -41,6 +63,7 @@ import com.yuedu.reader.ui.components.LiquidGlassFloatingTabBar
 import com.yuedu.reader.ui.screens.AiReadingSettingsScreen
 import com.yuedu.reader.ui.screens.BookshelfScreen
 import com.yuedu.reader.ui.screens.ReaderScreen
+import com.yuedu.reader.ui.theme.LocalLiquidGlass
 import com.yuedu.reader.ui.theme.YueDuTheme
 import kotlinx.coroutines.launch
 
@@ -100,6 +123,9 @@ fun YueDuApp(
     val isTtsPaused by ttsManager.isPaused.collectAsState()
     val availableVoices by ttsManager.availableVoices.collectAsState()
     val activeTtsSentence by ttsManager.activeSentence.collectAsState()
+    val activeTtsBookId by ttsManager.activeBookId.collectAsState()
+    val activeTtsBookTitle by ttsManager.activeBookTitle.collectAsState()
+    val activeTtsChapterTitle by ttsManager.activeChapterTitle.collectAsState()
     val sleepRemainingSeconds by ttsManager.sleepRemainingSeconds.collectAsState()
     val cachedChapterCounts by ttsManager.cachedChapterCounts.collectAsState()
     val bookDownloadProgress by ttsManager.bookDownloadProgress.collectAsState()
@@ -177,6 +203,7 @@ fun YueDuApp(
                 fonts = fonts,
                 isTtsPlaying = isTtsPlaying,
                 isTtsPaused = isTtsPaused,
+                activeTtsBookId = activeTtsBookId,
                 activeTtsSentence = activeTtsSentence,
                 sleepRemainingSeconds = sleepRemainingSeconds,
                 resolveTypeface = { repository.getTypeface(it) },
@@ -194,14 +221,19 @@ fun YueDuApp(
                 onUpdateSettings = { transform ->
                     scope.launch { repository.updateSettings(transform) }
                 },
-                onStartTts = { sentences, startIdx, onChapterDone ->
-                    ttsManager.startReading(sentences, startIdx, ttsSettings, onChapterDone)
-                },
-                onPreloadTtsNextChapter = { nextSentences ->
-                    ttsManager.preloadNextChapter(nextSentences)
-                },
-                onContinueTtsNextChapter = { sentences ->
-                    ttsManager.continueNextChapter(sentences)
+                onStartTts = { chapters, chIdx, sentences, startIdx ->
+                    ttsManager.startReading(
+                        book = activeBook,
+                        chapters = chapters,
+                        chapterIndex = chIdx,
+                        sentences = sentences,
+                        startIndex = startIdx,
+                        settings = ttsSettings
+                    ) { b, cIdx, off, prog ->
+                        scope.launch {
+                            repository.updateBookProgress(b.id, cIdx, off, prog)
+                        }
+                    }
                 },
                 onPauseResumeTts = {
                     if (isTtsPaused) ttsManager.resume() else ttsManager.pause()
@@ -240,7 +272,6 @@ fun YueDuApp(
                     wifiServer.start()
                 },
                 onExit = {
-                    ttsManager.stop()
                     activeBookId = null
                 }
             )
@@ -353,17 +384,119 @@ fun YueDuApp(
                     }
                 }
 
-                Box(
+                Column(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .navigationBarsPadding()
-                        .padding(horizontal = 36.dp, vertical = 14.dp)
+                        .padding(bottom = 14.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    LiquidGlassFloatingTabBar(
-                        tabs = tabs,
-                        selectedIndex = selectedTab,
-                        onSelect = { selectedTab = it }
-                    )
+                    if (isTtsPlaying && activeTtsBookId != null) {
+                        val glass = LocalLiquidGlass.current
+                        val barBg = if (glass.isDark) Color(0xEE1A1D24) else Color(0xF2FFFFFF)
+                        val barBorder = if (glass.isDark) Color(0x36FFFFFF) else Color(0xCCFFFFFF)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 18.dp)
+                                .shadow(14.dp, CircleShape)
+                                .clip(CircleShape)
+                                .background(barBg)
+                                .border(0.8.dp, barBorder, CircleShape)
+                                .clickable { activeBookId = activeTtsBookId }
+                                .padding(horizontal = 14.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(32.dp)
+                                        .clip(CircleShape)
+                                        .background(glass.accentSoft),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.GraphicEq,
+                                        contentDescription = null,
+                                        tint = glass.accent,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Text(
+                                        text = activeTtsBookTitle ?: "正在朗读",
+                                        color = glass.textPrimary,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = buildString {
+                                            append(if (isTtsPaused) "已暂停 · " else "朗读中 · ")
+                                            append(activeTtsChapterTitle ?: "点击回到阅读位置")
+                                        },
+                                        color = glass.textSecondary,
+                                        fontSize = 11.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(32.dp)
+                                        .clip(CircleShape)
+                                        .background(glass.accentSoft)
+                                        .clickable {
+                                            if (isTtsPaused) ttsManager.resume() else ttsManager.pause()
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = if (isTtsPaused) Icons.Rounded.PlayArrow else Icons.Rounded.Pause,
+                                        contentDescription = "暂停/继续",
+                                        tint = glass.accent,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .size(32.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0x1FFF3B30))
+                                        .clickable { ttsManager.stop() },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Stop,
+                                        contentDescription = "停止",
+                                        tint = Color(0xFFFF3B30),
+                                        modifier = Modifier.size(17.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Box(modifier = Modifier.padding(horizontal = 36.dp)) {
+                        LiquidGlassFloatingTabBar(
+                            tabs = tabs,
+                            selectedIndex = selectedTab,
+                            onSelect = { selectedTab = it }
+                        )
+                    }
                 }
             }
         }

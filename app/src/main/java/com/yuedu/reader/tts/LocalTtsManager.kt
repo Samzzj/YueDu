@@ -64,11 +64,16 @@ class LocalTtsManager(context: Context) {
     private var currentSentences: List<TtsSentence> = emptyList()
     private var currentIndex: Int = 0
     private var currentSettings: TtsSettings = TtsSettings()
-    private var onChapterFinishedCallback: (() -> Unit)? = null
+    private var activeBook: BookItem? = null
+    private var activeChapters: List<ChapterInfo> = emptyList()
+    private var currentChapterIndex: Int = 0
+    private var progressSaver: ((BookItem, Int, Int, Float) -> Unit)? = null
     private var suppressNextLocalDone: Boolean = false
 
-    // Cross-chapter lookahead caches so chapter transitions play seamlessly with zero stall
+    // Cross-chapter lookahead caches managed autonomously independent of UI lifecycle
+    private var nextChapterIdx: Int = -1
     private var nextChapterSentences: List<TtsSentence> = emptyList()
+    private var isLoadingNextChapter: Boolean = false
     private val nextChapterPrefetched = HashMap<Int, Deferred<File>>()
     private var nextChapterOfflineDeferred: Deferred<SherpaOfflineTtsEngine.SynthesizedAudio>? = null
 
@@ -83,6 +88,15 @@ class LocalTtsManager(context: Context) {
 
     private val _activeSentence = MutableStateFlow<TtsSentence?>(null)
     val activeSentence: StateFlow<TtsSentence?> = _activeSentence.asStateFlow()
+
+    private val _activeBookId = MutableStateFlow<String?>(null)
+    val activeBookId: StateFlow<String?> = _activeBookId.asStateFlow()
+
+    private val _activeBookTitle = MutableStateFlow<String?>(null)
+    val activeBookTitle: StateFlow<String?> = _activeBookTitle.asStateFlow()
+
+    private val _activeChapterTitle = MutableStateFlow<String?>(null)
+    val activeChapterTitle: StateFlow<String?> = _activeChapterTitle.asStateFlow()
 
     private val _sleepRemainingSeconds = MutableStateFlow(0)
     val sleepRemainingSeconds: StateFlow<Int> = _sleepRemainingSeconds.asStateFlow()
@@ -178,11 +192,7 @@ class LocalTtsManager(context: Context) {
         if (next < currentSentences.size) {
             speakFromIndex(next)
         } else {
-            if (currentSettings.sleepTimerMinutes == -1) {
-                stop()
-            } else {
-                onChapterFinishedCallback?.invoke()
-            }
+            advanceToNextChapterInternal()
         }
     }
 
@@ -286,42 +296,43 @@ class LocalTtsManager(context: Context) {
     }
 
     fun startReading(
+        book: BookItem,
+        chapters: List<ChapterInfo>,
+        chapterIndex: Int,
         sentences: List<TtsSentence>,
         startIndex: Int,
         settings: TtsSettings,
-        onChapterCompleted: () -> Unit
+        onProgressUpdate: (BookItem, Int, Int, Float) -> Unit
     ) {
-        if (sentences.isEmpty()) return
+        if (chapters.isEmpty()) return
         previewJob?.cancel()
         playJob?.cancel()
         clearNextChapterPreload()
         releaseAllAudio()
 
-        currentSentences = sentences
-        currentIndex = startIndex.coerceIn(0, sentences.lastIndex)
+        activeBook = book
+        activeChapters = chapters
+        currentChapterIndex = chapterIndex.coerceIn(0, chapters.lastIndex)
         currentSettings = settings
-        onChapterFinishedCallback = onChapterCompleted
+        progressSaver = onProgressUpdate
         _isPlaying.value = true
         _isPaused.value = false
         _errorMessage.value = null
+        _activeBookId.value = book.id
+        _activeBookTitle.value = book.title
+        _activeChapterTitle.value = chapters.getOrNull(currentChapterIndex)?.title
 
         val activeVoice = resolveVoice(settings.voiceId)
         TtsPlaybackService.startOrUpdate(appContext, "正在使用「${activeVoice.displayLabel}」朗读")
         startSleepTimerIfNeeded(settings.sleepTimerMinutes)
-        speakFromIndex(currentIndex)
-    }
 
-    fun preloadNextChapter(sentences: List<TtsSentence>) {
-        if (sentences == nextChapterSentences) return
-        val firstCh = sentences.firstOrNull()?.chapterIndex
-        if (firstCh != null && firstCh == nextChapterSentences.firstOrNull()?.chapterIndex && sentences.size == nextChapterSentences.size) {
-            return
+        if (sentences.isNotEmpty()) {
+            currentSentences = sentences
+            currentIndex = startIndex.coerceIn(0, sentences.lastIndex)
+            speakFromIndex(currentIndex)
+        } else {
+            advanceToNextChapterInternal(startSearchFrom = currentChapterIndex)
         }
-        nextChapterPrefetched.values.forEach { it.cancel() }
-        nextChapterPrefetched.clear()
-        nextChapterOfflineDeferred?.cancel()
-        nextChapterOfflineDeferred = null
-        nextChapterSentences = sentences
     }
 
     private fun clearNextChapterPreload() {
@@ -330,32 +341,143 @@ class LocalTtsManager(context: Context) {
         nextChapterOfflineDeferred?.cancel()
         nextChapterOfflineDeferred = null
         nextChapterSentences = emptyList()
+        nextChapterIdx = -1
+        isLoadingNextChapter = false
     }
 
-    fun continueNextChapter(sentences: List<TtsSentence>) {
-        if (!_isPlaying.value || sentences.isEmpty()) return
-        val matchesPreload = nextChapterSentences.isNotEmpty() &&
-            sentences.firstOrNull()?.chapterIndex == nextChapterSentences.firstOrNull()?.chapterIndex
-        val handedOffOnline = if (matchesPreload && nextChapterPrefetched.isNotEmpty()) {
-            HashMap(nextChapterPrefetched).also { nextChapterPrefetched.clear() }
-        } else {
-            nextChapterPrefetched.values.forEach { it.cancel() }
-            nextChapterPrefetched.clear()
-            null
-        }
-        val handedOffOffline = if (matchesPreload) {
-            nextChapterOfflineDeferred.also { nextChapterOfflineDeferred = null }
-        } else {
-            nextChapterOfflineDeferred?.cancel()
-            nextChapterOfflineDeferred = null
-            null
-        }
-        nextChapterSentences = emptyList()
+    private fun reportProgress(sentence: TtsSentence) {
+        val b = activeBook ?: return
+        val ch = activeChapters.getOrNull(sentence.chapterIndex)
+        val totalBytes = b.totalBytes.coerceAtLeast(1L).toFloat()
+        val chBytes = if (ch != null) (ch.endByte - ch.startByte).coerceAtLeast(1L).toFloat() else 1f
+        val chStart = ch?.startByte ?: 0L
+        val chLen = currentSentences.lastOrNull()?.endOffset?.coerceAtLeast(1) ?: 1
+        val ratio = (sentence.startOffset.toFloat() / chLen.toFloat()).coerceIn(0f, 1f)
+        val prog = ((chStart + chBytes * ratio) / totalBytes).coerceIn(0f, 1f)
+        progressSaver?.invoke(b, sentence.chapterIndex, sentence.startOffset, prog)
+    }
 
-        currentSentences = sentences
-        currentIndex = 0
-        _isPaused.value = false
-        speakFromIndex(0, handedOffOnline, handedOffOffline)
+    private fun ensureNextChapterPreloaded(isOfflineMode: Boolean) {
+        val book = activeBook ?: return
+        if (nextChapterSentences.isNotEmpty() || isLoadingNextChapter) return
+        val searchFrom = currentChapterIndex + 1
+        if (searchFrom >= activeChapters.size) return
+
+        isLoadingNextChapter = true
+        val voice = resolveVoice(currentSettings.voiceId)
+        val rate = currentSettings.speechRate
+        val chaptersSnapshot = activeChapters
+
+        scope.launch {
+            try {
+                val found = withContext(Dispatchers.IO) {
+                    val file = File(book.filePath)
+                    for (idx in searchFrom until chaptersSnapshot.size) {
+                        val paras = TxtBookEngine.readChapterParagraphs(file, chaptersSnapshot[idx])
+                        val sents = splitChapterIntoSentences(paras, idx)
+                        if (sents.isNotEmpty()) {
+                            return@withContext idx to sents
+                        }
+                    }
+                    null
+                }
+                if (found != null && _isPlaying.value && activeBook?.id == book.id) {
+                    nextChapterIdx = found.first
+                    nextChapterSentences = found.second
+                    if (!isOfflineMode) {
+                        val limit = minOf(3, found.second.size)
+                        for (nIdx in 0 until limit) {
+                            if (!nextChapterPrefetched.containsKey(nIdx)) {
+                                val nextSentence = found.second[nIdx]
+                                nextChapterPrefetched[nIdx] = scope.async(Dispatchers.IO) {
+                                    fetchOrLoadSentenceMp3(
+                                        sentenceText = nextSentence.text,
+                                        voiceName = voice.engineVoiceName,
+                                        speechRate = rate
+                                    )
+                                }
+                            }
+                        }
+                    } else if (nextChapterOfflineDeferred == null) {
+                        val firstNext = found.second.first()
+                        nextChapterOfflineDeferred = scope.async(Dispatchers.IO) {
+                            sherpaEngine.synthesizeBuiltinToPcm(
+                                sid = SherpaOfflineTtsEngine.YUNXI_BUILTIN_SID,
+                                rawText = firstNext.text,
+                                speed = rate
+                            )
+                        }
+                    }
+                }
+            } finally {
+                isLoadingNextChapter = false
+            }
+        }
+    }
+
+    private fun advanceToNextChapterInternal(startSearchFrom: Int = currentChapterIndex + 1) {
+        if (!_isPlaying.value || _isPaused.value) return
+        if (currentSettings.sleepTimerMinutes == -1) {
+            stop()
+            return
+        }
+
+        val book = activeBook
+        val chaptersSnapshot = activeChapters
+        if (book == null || chaptersSnapshot.isEmpty() || startSearchFrom >= chaptersSnapshot.size) {
+            stop()
+            return
+        }
+
+        if (nextChapterSentences.isNotEmpty() && nextChapterIdx >= startSearchFrom) {
+            val handedOffOnline = if (nextChapterPrefetched.isNotEmpty()) {
+                HashMap(nextChapterPrefetched).also { nextChapterPrefetched.clear() }
+            } else {
+                null
+            }
+            val handedOffOffline = nextChapterOfflineDeferred.also { nextChapterOfflineDeferred = null }
+            val loadedIdx = nextChapterIdx
+            val loadedSents = nextChapterSentences
+            nextChapterIdx = -1
+            nextChapterSentences = emptyList()
+            isLoadingNextChapter = false
+
+            currentChapterIndex = loadedIdx
+            currentSentences = loadedSents
+            currentIndex = 0
+            _activeChapterTitle.value = chaptersSnapshot.getOrNull(loadedIdx)?.title
+            _isPaused.value = false
+            loadedSents.firstOrNull()?.let { reportProgress(it) }
+            speakFromIndex(0, handedOffOnline, handedOffOffline)
+            return
+        }
+
+        // Next chapter wasn't preloaded yet (e.g. very short chapter or skipped empty chapters) -> load autonomously on IO
+        clearNextChapterPreload()
+        scope.launch {
+            val found = withContext(Dispatchers.IO) {
+                val file = File(book.filePath)
+                for (idx in startSearchFrom until chaptersSnapshot.size) {
+                    val paras = TxtBookEngine.readChapterParagraphs(file, chaptersSnapshot[idx])
+                    val sents = splitChapterIntoSentences(paras, idx)
+                    if (sents.isNotEmpty()) {
+                        return@withContext idx to sents
+                    }
+                }
+                null
+            }
+            if (!_isPlaying.value || _isPaused.value || activeBook?.id != book.id) return@launch
+            if (found == null) {
+                stop()
+                return@launch
+            }
+            currentChapterIndex = found.first
+            currentSentences = found.second
+            currentIndex = 0
+            _activeChapterTitle.value = chaptersSnapshot.getOrNull(found.first)?.title
+            found.second.firstOrNull()?.let { reportProgress(it) }
+            speakFromIndex(0)
+        }
     }
 
     fun pause() {
@@ -386,6 +508,12 @@ class LocalTtsManager(context: Context) {
         _isPlaying.value = false
         _isPaused.value = false
         _activeSentence.value = null
+        _activeBookId.value = null
+        _activeBookTitle.value = null
+        _activeChapterTitle.value = null
+        activeBook = null
+        activeChapters = emptyList()
+        progressSaver = null
     }
 
     fun updateLiveSettings(newSettings: TtsSettings) {
@@ -525,23 +653,6 @@ class LocalTtsManager(context: Context) {
                 }
             }
 
-            fun enqueueNextChapterIfNeeded() {
-                if (nextChapterSentences.isEmpty()) return
-                val limit = minOf(3, nextChapterSentences.size)
-                for (nIdx in 0 until limit) {
-                    if (!nextChapterPrefetched.containsKey(nIdx)) {
-                        val nextSentence = nextChapterSentences[nIdx]
-                        nextChapterPrefetched[nIdx] = scope.async(Dispatchers.IO) {
-                            fetchOrLoadSentenceMp3(
-                                sentenceText = nextSentence.text,
-                                voiceName = selectedOption.engineVoiceName,
-                                speechRate = currentSettings.speechRate
-                            )
-                        }
-                    }
-                }
-            }
-
             fun prepareClipAsync(fileDeferred: Deferred<File>): Deferred<PreparedClip> =
                 async(Dispatchers.IO) {
                     val audioFile = fileDeferred.await()
@@ -576,13 +687,14 @@ class LocalTtsManager(context: Context) {
                     val sentence = currentSentences[idx]
                     currentIndex = idx
                     _activeSentence.value = sentence
+                    reportProgress(sentence)
 
                     if (nextClipDeferred == null) enqueuePrefetch(idx)
                     for (ahead in 1..5) {
                         enqueuePrefetch(idx + ahead)
                     }
                     if (idx >= currentSentences.size - 4) {
-                        enqueueNextChapterIfNeeded()
+                        ensureNextChapterPreloaded(isOfflineMode = false)
                     }
 
                     val currentClipDeferred = nextClipDeferred ?: prepareClipAsync(prefetched.remove(idx)!!)
@@ -644,7 +756,7 @@ class LocalTtsManager(context: Context) {
                 }
 
                 if (idx >= currentSentences.size && _isPlaying.value && !_isPaused.value) {
-                    if (currentSettings.sleepTimerMinutes == -1) stop() else onChapterFinishedCallback?.invoke()
+                    advanceToNextChapterInternal()
                 }
             } finally {
                 cleanupPending()
@@ -703,6 +815,7 @@ class LocalTtsManager(context: Context) {
                     val sentence = currentSentences[idx]
                     currentIndex = idx
                     _activeSentence.value = sentence
+                    reportProgress(sentence)
 
                     val currentDeferred = nextDeferred ?: async(Dispatchers.IO) {
                         synthesizer(sentence)
@@ -715,12 +828,7 @@ class LocalTtsManager(context: Context) {
                         }
                     } else {
                         nextDeferred = null
-                        if (nextChapterSentences.isNotEmpty() && nextChapterOfflineDeferred == null) {
-                            val firstNext = nextChapterSentences.first()
-                            nextChapterOfflineDeferred = scope.async(Dispatchers.IO) {
-                                synthesizer(firstNext)
-                            }
-                        }
+                        ensureNextChapterPreloaded(isOfflineMode = true)
                     }
 
                     try {
@@ -740,7 +848,7 @@ class LocalTtsManager(context: Context) {
                 }
 
                 if (idx >= currentSentences.size && _isPlaying.value && !_isPaused.value) {
-                    if (currentSettings.sleepTimerMinutes == -1) stop() else onChapterFinishedCallback?.invoke()
+                    advanceToNextChapterInternal()
                 }
             } finally {
                 nextDeferred?.cancel()

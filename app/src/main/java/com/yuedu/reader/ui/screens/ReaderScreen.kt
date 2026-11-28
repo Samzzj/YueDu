@@ -188,6 +188,7 @@ fun ReaderScreen(
     fonts: List<CustomFont>,
     isTtsPlaying: Boolean,
     isTtsPaused: Boolean,
+    activeTtsBookId: String?,
     activeTtsSentence: TtsSentence?,
     sleepRemainingSeconds: Int,
     resolveTypeface: (String) -> Typeface,
@@ -199,9 +200,7 @@ fun ReaderScreen(
     onSearchBook: suspend (BookItem, List<ChapterInfo>, String) -> List<SearchHit>,
     onSaveProgress: (bookId: String, chapterIdx: Int, charOffset: Int, progress: Float) -> Unit,
     onUpdateSettings: ((ReaderSettings) -> ReaderSettings) -> Unit,
-    onStartTts: (sentences: List<TtsSentence>, startIdx: Int, onChapterDone: () -> Unit) -> Unit,
-    onPreloadTtsNextChapter: (nextSentences: List<TtsSentence>) -> Unit,
-    onContinueTtsNextChapter: (sentences: List<TtsSentence>) -> Unit,
+    onStartTts: (chapters: List<ChapterInfo>, chapterIndex: Int, sentences: List<TtsSentence>, startIdx: Int) -> Unit,
     onPauseResumeTts: () -> Unit,
     onStopTts: () -> Unit,
     ttsBookDownloadProgress: Float?,
@@ -217,9 +216,20 @@ fun ReaderScreen(
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
 
+    val initialTtsMatch = isTtsPlaying && activeTtsBookId == book.id && activeTtsSentence != null
     var chapters by remember(book.id) { mutableStateOf<List<ChapterInfo>>(emptyList()) }
-    var chapterIndex by remember(book.id) { mutableIntStateOf(book.currentChapterIndex.coerceAtLeast(0)) }
-    var targetCharOffset by remember(book.id) { mutableIntStateOf(book.currentCharOffset.coerceAtLeast(0)) }
+    var chapterIndex by remember(book.id) {
+        mutableIntStateOf(
+            if (initialTtsMatch) activeTtsSentence!!.chapterIndex.coerceAtLeast(0)
+            else book.currentChapterIndex.coerceAtLeast(0)
+        )
+    }
+    var targetCharOffset by remember(book.id) {
+        mutableIntStateOf(
+            if (initialTtsMatch) activeTtsSentence!!.startOffset.coerceAtLeast(0)
+            else book.currentCharOffset.coerceAtLeast(0)
+        )
+    }
     var jumpToLastPageOnChapterLoad by remember { mutableStateOf(false) }
     var jumpNonce by remember(book.id) { mutableIntStateOf(0) }
 
@@ -394,14 +404,6 @@ fun ReaderScreen(
             nextPaginated = if (safeIdx < chapters.lastIndex) paginateChapterByIndex(safeIdx + 1).second else null
         }
 
-        // Feed next chapter's sentences to TTS engine so chapter boundaries never stall
-        LaunchedEffect(nextPaginated, isTtsPlaying, chapterIndex) {
-            if (isTtsPlaying) {
-                val nextSents = nextPaginated?.takeIf { it.chapterIndex == chapterIndex + 1 }?.sentences.orEmpty()
-                onPreloadTtsNextChapter(nextSents)
-            }
-        }
-
         // Persist progress ONLY when currentPaginated matches chapterIndex
         LaunchedEffect(currentPageIndex, currentPaginated) {
             val state = currentPaginated ?: return@LaunchedEffect
@@ -450,44 +452,51 @@ fun ReaderScreen(
             }
         }
 
-        // Auto-follow TTS sentence page turn
-        LaunchedEffect(activeTtsSentence, ttsSettings.autoFollow, isTtsPlaying) {
+        // Auto-follow TTS sentence page & chapter turn (also re-aligns immediately on re-entering ReaderScreen)
+        LaunchedEffect(
+            activeTtsSentence,
+            currentPaginated,
+            chapterIndex,
+            chapters.size,
+            ttsSettings.autoFollow,
+            isTtsPlaying,
+            activeTtsBookId
+        ) {
             val sentence = activeTtsSentence ?: return@LaunchedEffect
             if (!isTtsPlaying || !ttsSettings.autoFollow) return@LaunchedEffect
-            if (sentence.chapterIndex == chapterIndex) {
-                val pages = currentPaginated?.takeIf { it.chapterIndex == chapterIndex }?.pages ?: return@LaunchedEffect
-                val targetPage = pages.indexOfFirst {
-                    sentence.startOffset >= it.startOffset && sentence.startOffset < it.endOffset
-                }.let { if (it >= 0) it else pages.indexOfLast { p -> p.startOffset <= sentence.startOffset } }
-                if (targetPage >= 0 && targetPage != currentPageIndex) {
-                    currentPageIndex = targetPage
+            if (activeTtsBookId != null && activeTtsBookId != book.id) return@LaunchedEffect
+
+            if (sentence.chapterIndex != chapterIndex) {
+                if (chapters.isNotEmpty() && sentence.chapterIndex in chapters.indices) {
+                    jumpToLastPageOnChapterLoad = false
+                    targetCharOffset = sentence.startOffset
+                    chapterIndex = sentence.chapterIndex
+                    jumpNonce++
                 }
+                return@LaunchedEffect
+            }
+
+            val pages = currentPaginated?.takeIf { it.chapterIndex == chapterIndex }?.pages ?: return@LaunchedEffect
+            val targetPage = pages.indexOfFirst {
+                sentence.startOffset >= it.startOffset && sentence.startOffset < it.endOffset
+            }.let { if (it >= 0) it else pages.indexOfLast { p -> p.startOffset <= sentence.startOffset } }
+            if (targetPage >= 0 && targetPage != currentPageIndex) {
+                currentPageIndex = targetPage
             }
         }
 
         fun startTtsFromCurrentPosition() {
             val state = currentPaginated ?: return
+            if (chapters.isEmpty()) return
             val page = state.pages.getOrNull(currentPageIndex)
             val offset = page?.startOffset ?: targetCharOffset
             val startSentenceIdx = state.sentences.indexOfFirst { it.endOffset > offset }.coerceAtLeast(0)
-            onStartTts(state.sentences, startSentenceIdx) {
-                // Chapter finished callback -> seamlessly advance to next chapter and continue reading
-                scope.launch {
-                    if (chapterIndex < chapters.lastIndex) {
-                        goNextChapterFirstPage()
-                        val nextIdx = chapterIndex
-                        val nextSentences = currentPaginated?.takeIf { it.chapterIndex == nextIdx }?.sentences
-                            ?: paginateChapterByIndex(nextIdx).second.sentences
-                        onContinueTtsNextChapter(nextSentences)
-                    } else {
-                        onStopTts()
-                    }
-                }
-            }
+            onStartTts(chapters, chapterIndex, state.sentences, startSentenceIdx)
         }
 
         val highlightRange: IntRange? = if (
             isTtsPlaying &&
+            (activeTtsBookId == null || activeTtsBookId == book.id) &&
             ttsSettings.highlightSentence &&
             activeTtsSentence != null &&
             activeTtsSentence.chapterIndex == chapterIndex
@@ -670,10 +679,11 @@ fun ReaderScreen(
                         }
                     }
 
-                    // Auto-scroll vertical list when TTS speaks next sentence
-                    LaunchedEffect(activeTtsSentence, ttsSettings.autoFollow, isTtsPlaying) {
+                    // Auto-scroll vertical list when TTS speaks next sentence (or on re-entering ReaderScreen)
+                    LaunchedEffect(activeTtsSentence, verticalItems.size, ttsSettings.autoFollow, isTtsPlaying) {
                         val s = activeTtsSentence ?: return@LaunchedEffect
                         if (!isTtsPlaying || !ttsSettings.autoFollow) return@LaunchedEffect
+                        if (activeTtsBookId != null && activeTtsBookId != book.id) return@LaunchedEffect
                         val idx = verticalItems.indexOfFirst {
                             it.chapterIndex == s.chapterIndex &&
                                 s.startOffset >= it.charOffset &&
