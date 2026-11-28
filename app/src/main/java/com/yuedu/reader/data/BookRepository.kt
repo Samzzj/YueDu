@@ -16,6 +16,7 @@ import com.yuedu.reader.model.ReaderTheme
 import com.yuedu.reader.model.ReadingMode
 import com.yuedu.reader.model.SearchHit
 import com.yuedu.reader.model.TtsSettings
+import com.yuedu.reader.tts.TtsAudioCache
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -351,6 +352,7 @@ class BookRepository(private val context: Context) {
             File(booksDir, "$bookId.txt").delete()
             File(chaptersDir, "$bookId.json").delete()
             File(bookmarksDir, "$bookId.json").delete()
+            TtsAudioCache(context).clearBookIndex(bookId)
             val updated = _books.value.filterNot { it.id == bookId }
             _books.value = updated
             writeBooksLocked(updated)

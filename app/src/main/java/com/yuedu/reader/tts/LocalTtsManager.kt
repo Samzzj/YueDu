@@ -7,6 +7,8 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
 import com.yuedu.reader.engine.TxtBookEngine
+import com.yuedu.reader.model.BookItem
+import com.yuedu.reader.model.ChapterInfo
 import com.yuedu.reader.model.TtsSentence
 import com.yuedu.reader.model.TtsSettings
 import com.yuedu.reader.model.TtsVoiceOption
@@ -18,12 +20,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
@@ -34,7 +40,8 @@ class LocalTtsManager(context: Context) {
 
     private val appContext = context.applicationContext
     private val sherpaEngine = SherpaOfflineTtsEngine(appContext)
-    private val previewCacheDir = File(appContext.cacheDir, "tts_preview_cache").apply { mkdirs() }
+    val audioCache = TtsAudioCache(appContext)
+    private val bookDownloadJobs = mutableMapOf<String, Job>()
 
     private val crashHandler = CoroutineExceptionHandler { _, throwable ->
         if (throwable !is CancellationException) {
@@ -62,7 +69,7 @@ class LocalTtsManager(context: Context) {
 
     // Cross-chapter lookahead caches so chapter transitions play seamlessly with zero stall
     private var nextChapterSentences: List<TtsSentence> = emptyList()
-    private val nextChapterPrefetched = HashMap<Int, Deferred<ByteArray>>()
+    private val nextChapterPrefetched = HashMap<Int, Deferred<File>>()
     private var nextChapterOfflineDeferred: Deferred<SherpaOfflineTtsEngine.SynthesizedAudio>? = null
 
     private val _isPlaying = MutableStateFlow(false)
@@ -80,17 +87,34 @@ class LocalTtsManager(context: Context) {
     private val _sleepRemainingSeconds = MutableStateFlow(0)
     val sleepRemainingSeconds: StateFlow<Int> = _sleepRemainingSeconds.asStateFlow()
 
-    private val _downloadedPacks = MutableStateFlow<Set<String>>(sherpaEngine.getDownloadedPackIds())
-    val downloadedPacks: StateFlow<Set<String>> = _downloadedPacks.asStateFlow()
+    private val _bookDownloadProgress = MutableStateFlow<Map<String, Float>>(emptyMap())
+    val bookDownloadProgress: StateFlow<Map<String, Float>> = _bookDownloadProgress.asStateFlow()
 
-    private val _packDownloadProgress = MutableStateFlow<Map<String, Float>>(emptyMap())
-    val packDownloadProgress: StateFlow<Map<String, Float>> = _packDownloadProgress.asStateFlow()
+    private val _cachedChapterCounts = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val cachedChapterCounts: StateFlow<Map<String, Int>> = _cachedChapterCounts.asStateFlow()
+
+    private val _totalCacheBytes = MutableStateFlow(0L)
+    val totalCacheBytes: StateFlow<Long> = _totalCacheBytes.asStateFlow()
 
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
     init {
         initLocalEngine()
+        scope.launch {
+            _availableVoices.value = EdgeNeuralTtsEngine.fetchVpsVoices()
+        }
+        scope.launch(Dispatchers.IO) {
+            _totalCacheBytes.value = audioCache.getTotalCacheBytes()
+        }
+    }
+
+    fun refreshAudioCacheStats(settings: TtsSettings) {
+        val voice = resolveVoice(settings.voiceId)
+        scope.launch(Dispatchers.IO) {
+            _cachedChapterCounts.value = audioCache.getAllCachedChapterCounts(voice.id, settings.speechRate)
+            _totalCacheBytes.value = audioCache.getTotalCacheBytes()
+        }
     }
 
     private fun initLocalEngine() {
@@ -162,18 +186,102 @@ class LocalTtsManager(context: Context) {
         }
     }
 
-    suspend fun downloadOfflinePack(packId: String): Result<Unit> {
-        if (_packDownloadProgress.value.containsKey(packId)) {
-            return Result.success(Unit)
+    fun cancelBookAudioDownload(bookId: String) {
+        bookDownloadJobs.remove(bookId)?.cancel()
+        _bookDownloadProgress.value = _bookDownloadProgress.value - bookId
+    }
+
+    fun clearAllCachedAudio(settings: TtsSettings) {
+        bookDownloadJobs.values.forEach { it.cancel() }
+        bookDownloadJobs.clear()
+        _bookDownloadProgress.value = emptyMap()
+        scope.launch(Dispatchers.IO) {
+            audioCache.clearAll()
+            _cachedChapterCounts.value = emptyMap()
+            _totalCacheBytes.value = 0L
         }
-        return runCatching {
-            _packDownloadProgress.value = _packDownloadProgress.value + (packId to 0f)
-            sherpaEngine.downloadAndInstallPack(packId) { p ->
-                _packDownloadProgress.value = _packDownloadProgress.value + (packId to p)
+    }
+
+    suspend fun downloadBookChapters(
+        book: BookItem,
+        chapters: List<ChapterInfo>,
+        startChapterIndex: Int,
+        chapterCount: Int,
+        settings: TtsSettings
+    ): Result<Int> {
+        if (chapters.isEmpty()) return Result.failure(IllegalStateException("书籍暂无章节"))
+        if (bookDownloadJobs.containsKey(book.id)) return Result.success(0)
+
+        val voice = resolveVoice(settings.voiceId)
+        val alreadyCached = audioCache.getBookCachedChapters(book.id, voice.id, settings.speechRate)
+        val safeStart = startChapterIndex.coerceIn(0, chapters.lastIndex)
+        val candidates = (safeStart until chapters.size)
+            .map { chapters[it] }
+            .filterNot { it.index in alreadyCached }
+            .take(chapterCount)
+            .ifEmpty {
+                chapters.filterNot { it.index in alreadyCached }.take(chapterCount)
             }
-            _downloadedPacks.value = sherpaEngine.getDownloadedPackIds()
+
+        if (candidates.isEmpty()) {
+            refreshAudioCacheStats(settings)
+            return Result.success(0)
+        }
+
+        return runCatching {
+            val job = scope.launch(Dispatchers.IO) {
+                val sem = Semaphore(3)
+                var completedChapters = 0
+                val totalChapters = candidates.size
+                _bookDownloadProgress.value = _bookDownloadProgress.value + (book.id to 0.01f)
+
+                for (ch in candidates) {
+                    val paras = TxtBookEngine.readChapterParagraphs(File(book.filePath), ch)
+                    val sentences = splitChapterIntoSentences(paras, ch.index)
+                    val totalSents = sentences.size.coerceAtLeast(1)
+                    var doneSents = 0
+
+                    coroutineScope {
+                        sentences.map { sent ->
+                            async {
+                                sem.withPermit {
+                                    if (!audioCache.hasCachedClip(voice.engineVoiceName, settings.speechRate, sent.text)) {
+                                        runCatching {
+                                            val bytes = EdgeNeuralTtsEngine.synthesizeToMp3Bytes(
+                                                text = sent.text,
+                                                voiceName = voice.engineVoiceName,
+                                                speechRate = settings.speechRate
+                                            )
+                                            audioCache.writeCachedClip(voice.engineVoiceName, settings.speechRate, sent.text, bytes)
+                                        }.onFailure { err ->
+                                            if (err is CancellationException) throw err
+                                            if (err !is EdgeNeuralTtsEngine.EmptyAudioException) throw err
+                                        }
+                                    }
+                                    synchronized(bookDownloadJobs) {
+                                        doneSents++
+                                        val prog = ((completedChapters + doneSents.toFloat() / totalSents) / totalChapters)
+                                            .coerceIn(0.01f, 0.99f)
+                                        _bookDownloadProgress.value = _bookDownloadProgress.value + (book.id to prog)
+                                    }
+                                }
+                            }
+                        }.awaitAll()
+                    }
+
+                    audioCache.markChapterCached(book.id, ch.index, voice.id, settings.speechRate)
+                    completedChapters++
+                    _cachedChapterCounts.value = audioCache.getAllCachedChapterCounts(voice.id, settings.speechRate)
+                    _totalCacheBytes.value = audioCache.getTotalCacheBytes()
+                }
+            }
+            bookDownloadJobs[book.id] = job
+            job.join()
+            candidates.size
         }.also {
-            _packDownloadProgress.value = _packDownloadProgress.value - packId
+            bookDownloadJobs.remove(book.id)
+            _bookDownloadProgress.value = _bookDownloadProgress.value - book.id
+            refreshAudioCacheStats(settings)
         }
     }
 
@@ -301,15 +409,16 @@ class LocalTtsManager(context: Context) {
     }
 
     private fun resolveVoice(voiceId: String): TtsVoiceOption {
-        return _availableVoices.value.find { it.id == voiceId }
+        val mapped = if (voiceId == "matcha:baker") "edge:zh-CN-XiaoxiaoNeural" else voiceId
+        return _availableVoices.value.find { it.id == mapped }
+            ?: _availableVoices.value.firstOrNull()
             ?: EdgeNeuralTtsEngine.neuralVoices.first()
     }
 
     /**
-     * Unified voice routing for BOTH previewVoice and speakFromIndex:
-     * 1) If user downloaded this voice's offline pack -> use that downloaded offline pack.
-     * 2) Else (including built-in 云希 when online) -> use expressive EdgeNeuralTtsEngine with gapless pre-prepared MediaPlayer,
-     *    falling back seamlessly to built-in Kokoro FP32 云希 when offline.
+     * Unified voice routing for preview, streaming playback, and downloaded offline chapter audio:
+     * All use the exact same Edge ReadAloud MP3 clips from HK CN2 VPS (or local cache when downloaded/cached),
+     * so previews and downloaded audio deliver 100% identical voice and emotion.
      */
     fun previewVoice(settings: TtsSettings) {
         val sampleText = "清晨的微风拂过书页，杨凌合上手中的古籍，缓缓走向窗前，轻声说道，这一章的故事才刚刚开始。"
@@ -317,44 +426,19 @@ class LocalTtsManager(context: Context) {
         releaseAllAudio()
 
         val selectedOption = resolveVoice(settings.voiceId)
-        val packId = selectedOption.offlinePackId
-
-        if (packId != null && sherpaEngine.isPackDownloaded(packId)) {
-            previewJob = scope.launch {
-                runCatching {
-                    val audio = sherpaEngine.synthesizeDownloadedToPcm(
-                        packId = packId,
-                        sid = selectedOption.offlineSid,
-                        rawText = sampleText,
-                        speed = settings.speechRate
-                    )
-                    sherpaEngine.playStreamingPcm(audio)
-                }.onFailure {
-                    if (it !is CancellationException) {
-                        previewBuiltinYunxiFallback(sampleText, settings)
-                    }
-                }
-            }
-            return
-        }
 
         previewJob = scope.launch {
             try {
-                val safeRateKey = "%.2f".format(Locale.US, settings.speechRate)
-                val cacheKey = "${selectedOption.engineVoiceName}_$safeRateKey.mp3"
-                val cachedFile = File(previewCacheDir, cacheKey)
                 val mp3Bytes = withContext(Dispatchers.IO) {
-                    if (cachedFile.exists() && cachedFile.length() > 1024L) {
-                        cachedFile.readBytes()
-                    } else {
-                        EdgeNeuralTtsEngine.synthesizeToMp3Bytes(
+                    audioCache.readCachedClip(selectedOption.engineVoiceName, settings.speechRate, sampleText)
+                        ?: EdgeNeuralTtsEngine.synthesizeToMp3Bytes(
                             text = sampleText,
                             voiceName = selectedOption.engineVoiceName,
                             speechRate = settings.speechRate
                         ).also { bytes ->
-                            if (bytes.size > 1024) runCatching { cachedFile.writeBytes(bytes) }
+                            audioCache.writeCachedClip(selectedOption.engineVoiceName, settings.speechRate, sampleText, bytes)
+                            _totalCacheBytes.value = audioCache.getTotalCacheBytes()
                         }
-                    }
                 }
                 playMp3Blocking(mp3Bytes)
             } catch (ce: CancellationException) {
@@ -386,35 +470,42 @@ class LocalTtsManager(context: Context) {
 
     private data class PreparedClip(
         val file: File,
-        val player: MediaPlayer
+        val player: MediaPlayer,
+        val deleteFileOnFinish: Boolean = true
     )
+
+    private suspend fun fetchOrLoadSentenceMp3(
+        sentenceText: String,
+        voiceName: String,
+        speechRate: Float
+    ): File {
+        val existing = audioCache.clipFile(voiceName, speechRate, sentenceText)
+        if (existing.exists() && existing.length() > 64L) {
+            return existing
+        }
+        val bytes = EdgeNeuralTtsEngine.synthesizeToMp3Bytes(
+            text = sentenceText,
+            voiceName = voiceName,
+            speechRate = speechRate
+        )
+        return audioCache.writeCachedClip(voiceName, speechRate, sentenceText, bytes)
+            ?: File(appContext.cacheDir, "tts_${UUID.randomUUID()}.mp3").apply { writeBytes(bytes) }
+    }
 
     private fun speakFromIndex(
         startIdx: Int,
-        initialOnlinePrefetched: Map<Int, Deferred<ByteArray>>? = null,
+        initialOnlinePrefetched: Map<Int, Deferred<File>>? = null,
         initialOfflineFirst: Deferred<SherpaOfflineTtsEngine.SynthesizedAudio>? = null
     ) {
         val selectedOption = resolveVoice(currentSettings.voiceId)
-        val packId = selectedOption.offlinePackId
 
-        if (packId != null && sherpaEngine.isPackDownloaded(packId)) {
-            speakOfflineLoopWithLookahead(startIdx, initialOfflineFirst) { sentence ->
-                sherpaEngine.synthesizeDownloadedToPcm(
-                    packId = packId,
-                    sid = selectedOption.offlineSid,
-                    rawText = sentence.text,
-                    speed = currentSettings.speechRate
-                )
-            }
-            return
-        }
-
-        // Online Edge Neural TTS with 6-sentence lookahead + cross-chapter prefetch + pre-prepared MediaPlayer handoff
-        // and resilient fallback to built-in Kokoro FP32 云希 only on sustained network failure.
+        // Unified Edge ReadAloud pipeline:
+        // 1) Local downloaded/cached Edge MP3 -> 2) HK CN2 VPS Edge gateway -> 3) Direct Bing Edge backup
+        // Built-in Kokoro 云希 is only used silently if completely offline and chapter was not downloaded.
         playJob?.cancel()
         playJob = scope.launch {
             var idx = startIdx
-            val prefetched = HashMap<Int, Deferred<ByteArray>>()
+            val prefetched = HashMap<Int, Deferred<File>>()
             if (initialOnlinePrefetched != null) {
                 prefetched.putAll(initialOnlinePrefetched)
             }
@@ -426,8 +517,8 @@ class LocalTtsManager(context: Context) {
                 if (targetIdx >= currentSentences.size || prefetched.containsKey(targetIdx)) return
                 val targetSentence = currentSentences[targetIdx]
                 prefetched[targetIdx] = async(Dispatchers.IO) {
-                    EdgeNeuralTtsEngine.synthesizeToMp3Bytes(
-                        text = targetSentence.text,
+                    fetchOrLoadSentenceMp3(
+                        sentenceText = targetSentence.text,
                         voiceName = selectedOption.engineVoiceName,
                         speechRate = currentSettings.speechRate
                     )
@@ -440,10 +531,9 @@ class LocalTtsManager(context: Context) {
                 for (nIdx in 0 until limit) {
                     if (!nextChapterPrefetched.containsKey(nIdx)) {
                         val nextSentence = nextChapterSentences[nIdx]
-                        // Launch on parent scope so in-flight chapter-start audio survives chapter transition
                         nextChapterPrefetched[nIdx] = scope.async(Dispatchers.IO) {
-                            EdgeNeuralTtsEngine.synthesizeToMp3Bytes(
-                                text = nextSentence.text,
+                            fetchOrLoadSentenceMp3(
+                                sentenceText = nextSentence.text,
                                 voiceName = selectedOption.engineVoiceName,
                                 speechRate = currentSettings.speechRate
                             )
@@ -452,19 +542,17 @@ class LocalTtsManager(context: Context) {
                 }
             }
 
-            fun prepareClipAsync(mp3Deferred: Deferred<ByteArray>): Deferred<PreparedClip> =
+            fun prepareClipAsync(fileDeferred: Deferred<File>): Deferred<PreparedClip> =
                 async(Dispatchers.IO) {
-                    val bytes = mp3Deferred.await()
-                    val tempFile = File(appContext.cacheDir, "tts_${UUID.randomUUID()}.mp3").apply {
-                        writeBytes(bytes)
-                    }
+                    val audioFile = fileDeferred.await()
+                    val isTemp = audioFile.parentFile == appContext.cacheDir
                     try {
                         val mp = MediaPlayer()
-                        mp.setDataSource(tempFile.absolutePath)
+                        mp.setDataSource(audioFile.absolutePath)
                         mp.prepare()
-                        PreparedClip(tempFile, mp).also { pendingClips.add(it) }
+                        PreparedClip(audioFile, mp, deleteFileOnFinish = isTemp).also { pendingClips.add(it) }
                     } catch (t: Throwable) {
-                        runCatching { tempFile.delete() }
+                        if (isTemp) runCatching { audioFile.delete() }
                         throw t
                     }
                 }
@@ -477,7 +565,7 @@ class LocalTtsManager(context: Context) {
                 synchronized(pendingClips) {
                     pendingClips.forEach { clip ->
                         runCatching { clip.player.release() }
-                        runCatching { clip.file.delete() }
+                        if (clip.deleteFileOnFinish) runCatching { clip.file.delete() }
                     }
                     pendingClips.clear()
                 }
@@ -510,7 +598,7 @@ class LocalTtsManager(context: Context) {
                         consecutiveNetworkFailures = 0
                         if (!_isPlaying.value || _isPaused.value) {
                             runCatching { clip.player.release() }
-                            runCatching { clip.file.delete() }
+                            if (clip.deleteFileOnFinish) runCatching { clip.file.delete() }
                             break
                         }
                         playPreparedClipBlocking(clip)
@@ -521,7 +609,6 @@ class LocalTtsManager(context: Context) {
                     } catch (_: Exception) {
                         consecutiveNetworkFailures++
                         if (consecutiveNetworkFailures < 2) {
-                            // Single transient glitch: fallback only this sentence if builtin is ready or skip, keeping online cache intact
                             if (sherpaEngine.isBuiltinAvailable()) {
                                 runCatching {
                                     val audio = sherpaEngine.synthesizeBuiltinToPcm(
@@ -535,11 +622,10 @@ class LocalTtsManager(context: Context) {
                                 }
                             }
                         } else {
-                            // Sustained network outage -> seamlessly switch to built-in offline Yunxi
                             cleanupPending()
                             clearNextChapterPreload()
                             if (sherpaEngine.isBuiltinAvailable()) {
-                                speakOfflineLoopWithLookahead(idx) { fallbackSentence ->
+                                speakOfflineLoopWithLookahead(idx, initialOfflineFirst) { fallbackSentence ->
                                     sherpaEngine.synthesizeBuiltinToPcm(
                                         sid = SherpaOfflineTtsEngine.YUNXI_BUILTIN_SID,
                                         rawText = fallbackSentence.text,
@@ -598,7 +684,7 @@ class LocalTtsManager(context: Context) {
                 }
             }
         } finally {
-            runCatching { clip.file.delete() }
+            if (clip.deleteFileOnFinish) runCatching { clip.file.delete() }
         }
     }
 

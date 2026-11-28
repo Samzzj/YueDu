@@ -69,6 +69,7 @@ import androidx.compose.material.icons.rounded.BookmarkBorder
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.LightMode
@@ -203,6 +204,8 @@ fun ReaderScreen(
     onContinueTtsNextChapter: (sentences: List<TtsSentence>) -> Unit,
     onPauseResumeTts: () -> Unit,
     onStopTts: () -> Unit,
+    ttsBookDownloadProgress: Float?,
+    onDownloadTtsChapters: (Int) -> Unit,
     onOpenAiSettingsTab: () -> Unit,
     onImportLocalFont: () -> Unit,
     onDeleteFont: (CustomFont) -> Unit,
@@ -892,6 +895,30 @@ fun ReaderScreen(
                             tint = settings.theme.accentColor,
                             modifier = Modifier.size(22.dp)
                         )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(settings.theme.textColor.copy(alpha = 0.09f))
+                            .clickable(enabled = ttsBookDownloadProgress == null) { onDownloadTtsChapters(chapterIndex) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (ttsBookDownloadProgress != null) {
+                            Text(
+                                text = "${(ttsBookDownloadProgress * 100).toInt()}%",
+                                color = settings.theme.accentColor,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Rounded.Download,
+                                contentDescription = "缓存后续5章离线听",
+                                tint = settings.theme.textColor,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                     Box(
                         modifier = Modifier

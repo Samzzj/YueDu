@@ -74,26 +74,27 @@ jobs:
 
       - name: Rename and Verify APK
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk YueDu-v0.8.2-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk YueDu-v0.9.0-debug.apk
           APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n1)
-          "$APKSIGNER" verify --print-certs YueDu-v0.8.2-debug.apk
+          "$APKSIGNER" verify --print-certs YueDu-v0.9.0-debug.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: YueDu-v0.8.2-debug-apk
-          path: YueDu-v0.8.2-debug.apk
+          name: YueDu-v0.9.0-debug-apk
+          path: YueDu-v0.9.0-debug.apk
 
-      - name: Publish v0.8.2 Release
+      - name: Publish v0.9.0 Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.8.2-preview
-          name: 悦读 YueDu v0.8.2
+          tag_name: v0.9.0-preview
+          name: 悦读 YueDu v0.9.0
           body: |
-            悦读 YueDu v0.8.2 更新内容：
-            - 修复「小贝」未下载离线包走在线试听/朗读时因微软下线 XiaohanNeural 导致的失败问题
-            - 包含 v0.8.1 的全部朗读流畅度修复（短对话段落合并、跨章节提前预加载、单句容错不轻易触发离线冷加载）
-          files: YueDu-v0.8.2-debug.apk
+            悦读 YueDu v0.9.0 更新内容：
+            - AI 音色全面重构接入香港 VPS Edge ReadAloud 网关：统一微软原声（云希/晓晓/云健/晓伊/云扬/晓臻/晓北/晓妮/云夏），服务端与手机端双重缓存
+            - 彻底移除原本音色不一致的离线 VITS 模型包，改为「同音色章节离线下载」：试听、在线听书、离线下载播放 100% 为同一 Edge ReadAloud 原声
+            - 在「AI 阅读」页与阅读器听书悬浮条新增一键下载后续 5 章离线音频与缓存管理
+          files: YueDu-v0.9.0-debug.apk
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

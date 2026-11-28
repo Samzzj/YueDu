@@ -21,8 +21,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.MenuBook
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Stop
@@ -43,6 +46,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.yuedu.reader.model.BookItem
 import com.yuedu.reader.model.TtsSettings
 import com.yuedu.reader.model.TtsVoiceOption
 import com.yuedu.reader.ui.theme.LocalLiquidGlass
@@ -55,12 +59,16 @@ fun AiReadingSettingsScreen(
     isTtsPaused: Boolean,
     sleepRemainingSeconds: Int,
     availableVoices: List<TtsVoiceOption>,
-    downloadedPacks: Set<String>,
-    packDownloadProgress: Map<String, Float>,
+    books: List<BookItem>,
+    cachedChapterCounts: Map<String, Int>,
+    bookDownloadProgress: Map<String, Float>,
+    totalCacheBytes: Long,
     ttsError: String?,
     onUpdateTtsSettings: ((TtsSettings) -> TtsSettings) -> Unit,
     onSelectAndPreviewVoice: (TtsVoiceOption) -> Unit,
-    onDownloadVoicePack: (String) -> Unit,
+    onDownloadBookChapters: (BookItem) -> Unit,
+    onCancelBookDownload: (String) -> Unit,
+    onClearAudioCache: () -> Unit,
     onPauseResumeTts: () -> Unit,
     onStopTts: () -> Unit
 ) {
@@ -360,7 +368,7 @@ fun AiReadingSettingsScreen(
             }
         }
 
-        // Section 2: Clean AI Voice List (iOS Inset Grouped List, zero clutter)
+        // Section 2: Unified VPS Edge ReadAloud AI Voices (Preview & Reading & Offline Audio all sound identical)
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(
@@ -377,7 +385,7 @@ fun AiReadingSettingsScreen(
                         fontWeight = FontWeight.Medium
                     )
                     Text(
-                        text = "点击即听",
+                        text = "微软原声 · 试听与下载同音",
                         color = glass.accent,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Medium
@@ -392,129 +400,62 @@ fun AiReadingSettingsScreen(
                 ) {
                     availableVoices.forEachIndexed { idx, voice ->
                         val selected = ttsSettings.voiceId == voice.id
-                        val packId = voice.offlinePackId
-                        val progress = packId?.let { packDownloadProgress[it] }
-                        val isDownloaded = packId != null && packId in downloadedPacks
 
-                        Column(
+                        Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .background(if (selected) glass.accentSoft.copy(alpha = 0.45f) else Color.Transparent)
                                 .clickable { onSelectAndPreviewVoice(voice) }
-                                .padding(horizontal = 16.dp, vertical = 13.dp)
+                                .padding(horizontal = 16.dp, vertical = 13.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically
+                            Box(
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(CircleShape)
+                                    .background(if (selected) glass.accent else pillBg),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(34.dp)
-                                        .clip(CircleShape)
-                                        .background(if (selected) glass.accent else pillBg),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = if (selected) Icons.Rounded.CheckCircle else Icons.Rounded.VolumeUp,
-                                        contentDescription = null,
-                                        tint = if (selected) Color.White else glass.textSecondary,
-                                        modifier = Modifier.size(17.dp)
-                                    )
-                                }
-
-                                Spacer(modifier = Modifier.width(12.dp))
-
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = voice.displayLabel,
-                                        color = glass.textPrimary,
-                                        fontSize = 15.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Text(
-                                        text = voice.styleTag,
-                                        color = glass.textSecondary,
-                                        fontSize = 12.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-
-                                Spacer(modifier = Modifier.width(8.dp))
-
-                                when {
-                                    voice.isBuiltinOffline -> {
-                                        Text(
-                                            text = if (selected) "使用中" else "已内置",
-                                            color = if (selected) glass.accent else glass.textSecondary,
-                                            fontSize = 12.sp,
-                                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
-                                        )
-                                    }
-
-                                    packId != null && progress != null -> {
-                                        Text(
-                                            text = "${(progress * 100).toInt()}%",
-                                            color = glass.accent,
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                    }
-
-                                    packId != null && isDownloaded -> {
-                                        Text(
-                                            text = "已下载",
-                                            color = Color(0xFF28A745),
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            modifier = Modifier
-                                                .clip(CircleShape)
-                                                .background(Color(0xFF28A745).copy(alpha = 0.14f))
-                                                .padding(horizontal = 10.dp, vertical = 4.dp)
-                                        )
-                                    }
-
-                                    packId != null -> {
-                                        Row(
-                                            modifier = Modifier
-                                                .clip(CircleShape)
-                                                .background(glass.accent)
-                                                .clickable { onDownloadVoicePack(packId) }
-                                                .padding(horizontal = 10.dp, vertical = 5.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.Download,
-                                                contentDescription = "下载到本地",
-                                                tint = Color.White,
-                                                modifier = Modifier.size(13.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text(
-                                                text = "下载 ${voice.offlineSizeLabel}",
-                                                color = Color.White,
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.SemiBold
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-
-                            if (progress != null) {
-                                Spacer(modifier = Modifier.height(8.dp))
-                                LinearProgressIndicator(
-                                    progress = { progress.coerceIn(0f, 1f) },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(3.dp)
-                                        .clip(CircleShape),
-                                    color = glass.accent,
-                                    trackColor = pillBg
+                                Icon(
+                                    imageVector = if (selected) Icons.Rounded.CheckCircle else Icons.Rounded.VolumeUp,
+                                    contentDescription = null,
+                                    tint = if (selected) Color.White else glass.textSecondary,
+                                    modifier = Modifier.size(17.dp)
                                 )
                             }
+
+                            Spacer(modifier = Modifier.width(12.dp))
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = voice.displayLabel,
+                                    color = glass.textPrimary,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = voice.styleTag,
+                                    color = glass.textSecondary,
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.width(8.dp))
+
+                            Text(
+                                text = if (selected) "使用中" else "试听",
+                                color = if (selected) Color.White else glass.accent,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .background(if (selected) glass.accent else glass.accentSoft)
+                                    .padding(horizontal = 10.dp, vertical = 4.dp)
+                            )
                         }
 
                         if (idx < availableVoices.lastIndex) {
@@ -523,6 +464,200 @@ fun AiReadingSettingsScreen(
                                 thickness = 0.5.dp,
                                 color = dividerColor
                             )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Section 3: Offline Chapter Audio Download (Uses exact same VPS Edge ReadAloud MP3s as previews!)
+        if (books.isNotEmpty()) {
+            item {
+                val activeVoiceLabel = availableVoices.find { it.id == ttsSettings.voiceId }?.displayLabel ?: "云希"
+                val cacheMb = String.format(Locale.US, "%.1f MB", totalCacheBytes / (1024f * 1024f))
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "离线听书下载（$activeVoiceLabel · ${String.format(Locale.US, "%.2fx", ttsSettings.speechRate)}）",
+                            color = glass.textSecondary,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        if (totalCacheBytes > 0L) {
+                            Row(
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .clickable { onClearAudioCache() }
+                                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.DeleteOutline,
+                                    contentDescription = "清理缓存",
+                                    tint = glass.textSecondary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = "清理 $cacheMb",
+                                    color = glass.textSecondary,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(cardBg)
+                    ) {
+                        books.take(8).forEachIndexed { idx, book ->
+                            val cachedCount = cachedChapterCounts[book.id] ?: 0
+                            val totalChapters = book.chapterCount.coerceAtLeast(1)
+                            val progress = bookDownloadProgress[book.id]
+                            val allDone = cachedCount >= totalChapters
+
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 13.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(34.dp)
+                                            .clip(CircleShape)
+                                            .background(pillBg),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.MenuBook,
+                                            contentDescription = null,
+                                            tint = glass.accent,
+                                            modifier = Modifier.size(17.dp)
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.width(12.dp))
+
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = book.title,
+                                            color = glass.textPrimary,
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = if (cachedCount > 0) "已离线缓存 $cachedCount / $totalChapters 章" else "未下载离线音频 · 共 $totalChapters 章",
+                                            color = glass.textSecondary,
+                                            fontSize = 12.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.width(8.dp))
+
+                                    when {
+                                        progress != null -> {
+                                            Row(
+                                                modifier = Modifier
+                                                    .clip(CircleShape)
+                                                    .background(pillBg)
+                                                    .clickable { onCancelBookDownload(book.id) }
+                                                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(
+                                                    text = "${(progress * 100).toInt()}%",
+                                                    color = glass.accent,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Icon(
+                                                    imageVector = Icons.Rounded.Close,
+                                                    contentDescription = "取消",
+                                                    tint = glass.textSecondary,
+                                                    modifier = Modifier.size(13.dp)
+                                                )
+                                            }
+                                        }
+
+                                        allDone -> {
+                                            Text(
+                                                text = "全本已缓存",
+                                                color = Color(0xFF28A745),
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                modifier = Modifier
+                                                    .clip(CircleShape)
+                                                    .background(Color(0xFF28A745).copy(alpha = 0.14f))
+                                                    .padding(horizontal = 10.dp, vertical = 4.dp)
+                                            )
+                                        }
+
+                                        else -> {
+                                            Row(
+                                                modifier = Modifier
+                                                    .clip(CircleShape)
+                                                    .background(glass.accent)
+                                                    .clickable { onDownloadBookChapters(book) }
+                                                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.Download,
+                                                    contentDescription = "下载章节音频",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(13.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text(
+                                                    text = if (cachedCount > 0) "再下 5 章" else "下载 5 章",
+                                                    color = Color.White,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (progress != null) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    LinearProgressIndicator(
+                                        progress = { progress.coerceIn(0f, 1f) },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(3.dp)
+                                            .clip(CircleShape),
+                                        color = glass.accent,
+                                        trackColor = pillBg
+                                    )
+                                }
+                            }
+
+                            if (idx < minOf(books.size, 8) - 1) {
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(start = 62.dp),
+                                    thickness = 0.5.dp,
+                                    color = dividerColor
+                                )
+                            }
                         }
                     }
                 }

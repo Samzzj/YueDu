@@ -101,12 +101,17 @@ fun YueDuApp(
     val availableVoices by ttsManager.availableVoices.collectAsState()
     val activeTtsSentence by ttsManager.activeSentence.collectAsState()
     val sleepRemainingSeconds by ttsManager.sleepRemainingSeconds.collectAsState()
-    val downloadedPacks by ttsManager.downloadedPacks.collectAsState()
-    val packDownloadProgress by ttsManager.packDownloadProgress.collectAsState()
+    val cachedChapterCounts by ttsManager.cachedChapterCounts.collectAsState()
+    val bookDownloadProgress by ttsManager.bookDownloadProgress.collectAsState()
+    val totalCacheBytes by ttsManager.totalCacheBytes.collectAsState()
     val ttsError by ttsManager.errorMessage.collectAsState()
 
     var selectedTab by remember { mutableIntStateOf(0) }
     var activeBookId by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(ttsSettings.voiceId, ttsSettings.speechRate) {
+        ttsManager.refreshAudioCacheStats(ttsSettings)
+    }
 
     LaunchedEffect(Unit) {
         repository.initialize()
@@ -202,6 +207,22 @@ fun YueDuApp(
                     if (isTtsPaused) ttsManager.resume() else ttsManager.pause()
                 },
                 onStopTts = { ttsManager.stop() },
+                ttsBookDownloadProgress = activeBook?.let { bookDownloadProgress[it.id] },
+                onDownloadTtsChapters = { chIdx ->
+                    val b = activeBook ?: return@ReaderScreen
+                    scope.launch {
+                        val chapters = repository.loadChapters(b.id)
+                        Toast.makeText(context, "正在从香港服务器缓存后续 5 章同声离线音频...", Toast.LENGTH_SHORT).show()
+                        ttsManager.downloadBookChapters(b, chapters, chIdx, 5, ttsSettings)
+                            .onSuccess { count ->
+                                val msg = if (count > 0) "已离线缓存 $count 章同音色音频" else "后续章节已在缓存中"
+                                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                            }
+                            .onFailure {
+                                Toast.makeText(context, "缓存失败：${it.message}", Toast.LENGTH_SHORT).show()
+                            }
+                    }
+                },
                 onOpenAiSettingsTab = {
                     activeBookId = null
                     selectedTab = 1
@@ -281,35 +302,48 @@ fun YueDuApp(
                             isTtsPaused = isTtsPaused,
                             sleepRemainingSeconds = sleepRemainingSeconds,
                             availableVoices = availableVoices,
-                            downloadedPacks = downloadedPacks,
-                            packDownloadProgress = packDownloadProgress,
+                            books = books,
+                            cachedChapterCounts = cachedChapterCounts,
+                            bookDownloadProgress = bookDownloadProgress,
+                            totalCacheBytes = totalCacheBytes,
                             ttsError = ttsError,
                             onUpdateTtsSettings = { transform ->
                                 scope.launch {
                                     val next = repository.updateTtsSettings(transform)
                                     ttsManager.updateLiveSettings(next)
+                                    ttsManager.refreshAudioCacheStats(next)
                                 }
                             },
                             onSelectAndPreviewVoice = { voice ->
                                 scope.launch {
                                     val next = repository.updateTtsSettings { it.copy(voiceId = voice.id) }
                                     ttsManager.updateLiveSettings(next)
+                                    ttsManager.refreshAudioCacheStats(next)
                                     if (!isTtsPlaying) {
                                         ttsManager.previewVoice(next)
                                     }
                                 }
                             },
-                            onDownloadVoicePack = { packId ->
+                            onDownloadBookChapters = { book ->
                                 scope.launch {
-                                    Toast.makeText(context, "开始下载离线语音包...", Toast.LENGTH_SHORT).show()
-                                    ttsManager.downloadOfflinePack(packId)
-                                        .onSuccess {
-                                            Toast.makeText(context, "语音包下载完成", Toast.LENGTH_SHORT).show()
+                                    val chapters = repository.loadChapters(book.id)
+                                    Toast.makeText(context, "正在缓存《${book.title}》后续 5 章同音色音频...", Toast.LENGTH_SHORT).show()
+                                    ttsManager.downloadBookChapters(book, chapters, book.currentChapterIndex, 5, ttsSettings)
+                                        .onSuccess { cnt ->
+                                            val msg = if (cnt > 0) "已完成 $cnt 章离线音频缓存" else "章节已全部缓存"
+                                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                                         }
                                         .onFailure {
-                                            Toast.makeText(context, "语音包下载失败：${it.message}", Toast.LENGTH_LONG).show()
+                                            Toast.makeText(context, "缓存失败：${it.message}", Toast.LENGTH_LONG).show()
                                         }
                                 }
+                            },
+                            onCancelBookDownload = { bookId ->
+                                ttsManager.cancelBookAudioDownload(bookId)
+                            },
+                            onClearAudioCache = {
+                                ttsManager.clearAllCachedAudio(ttsSettings)
+                                Toast.makeText(context, "已清理全部离线听书缓存", Toast.LENGTH_SHORT).show()
                             },
                             onPauseResumeTts = {
                                 if (isTtsPaused) ttsManager.resume() else ttsManager.pause()

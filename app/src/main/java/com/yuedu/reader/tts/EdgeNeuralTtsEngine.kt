@@ -1,13 +1,18 @@
 package com.yuedu.reader.tts
 
 import com.yuedu.reader.model.TtsVoiceOption
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.nio.charset.StandardCharsets
 import java.security.SecureRandom
@@ -27,6 +32,7 @@ import kotlin.coroutines.resumeWithException
  */
 object EdgeNeuralTtsEngine {
 
+    const val VPS_TTS_BASE_URL = "http://103.42.180.182"
     private const val BASE_URL = "speech.platform.bing.com/consumer/speech/synthesize/readaloud"
     private const val TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
     private const val CHROMIUM_FULL_VERSION = "143.0.3650.75"
@@ -35,7 +41,6 @@ object EdgeNeuralTtsEngine {
     private const val WSS_URL = "wss://$BASE_URL/edge/v1?TrustedClientToken=$TRUSTED_CLIENT_TOKEN"
 
     val neuralVoices: List<TtsVoiceOption> = listOf(
-        // 仅云希内置于安装包，其余音色全部支持 1:1 独立下载到本地（未下载前走在线拟真朗读，断网自动回落云希）
         TtsVoiceOption(
             id = "edge:zh-CN-YunxiNeural",
             engineVoiceName = "zh-CN-YunxiNeural",
@@ -49,96 +54,150 @@ object EdgeNeuralTtsEngine {
             id = "edge:zh-CN-XiaoxiaoNeural",
             engineVoiceName = "zh-CN-XiaoxiaoNeural",
             displayLabel = "晓晓",
-            styleTag = "温暖自然 · 小说女声",
-            isNeural = true,
-            offlinePackId = SherpaOfflineTtsEngine.PACK_VITS_THERESA,
-            offlineSid = 0,
-            offlineSizeLabel = "115MB",
-            isBuiltinOffline = false
+            styleTag = "温暖自然 · 广播级女声",
+            isNeural = true
         ),
         TtsVoiceOption(
             id = "edge:zh-CN-YunjianNeural",
             engineVoiceName = "zh-CN-YunjianNeural",
             displayLabel = "云健",
             styleTag = "热血沉稳 · 悬疑玄幻旁白",
-            isNeural = true,
-            offlinePackId = SherpaOfflineTtsEngine.PACK_VITS_UNITY,
-            offlineSid = 0,
-            offlineSizeLabel = "114MB",
-            isBuiltinOffline = false
+            isNeural = true
+        ),
+        TtsVoiceOption(
+            id = "edge:zh-CN-XiaoyiNeural",
+            engineVoiceName = "zh-CN-XiaoyiNeural",
+            displayLabel = "晓伊",
+            styleTag = "甜美灵动 · 青春故事女声",
+            isNeural = true
         ),
         TtsVoiceOption(
             id = "edge:zh-CN-YunyangNeural",
             engineVoiceName = "zh-CN-YunyangNeural",
             displayLabel = "云扬",
             styleTag = "沉稳播音 · 纪实历史男声",
-            isNeural = true,
-            offlinePackId = SherpaOfflineTtsEngine.PACK_VITS_ZHIHUI,
-            offlineSid = 0,
-            offlineSizeLabel = "114MB",
-            isBuiltinOffline = false
+            isNeural = true
         ),
         TtsVoiceOption(
-            id = "edge:zh-CN-XiaoyiNeural",
-            engineVoiceName = "zh-CN-XiaoyiNeural",
-            displayLabel = "晓伊",
-            styleTag = "甜美灵动 · 青春女声",
-            isNeural = true,
-            offlinePackId = SherpaOfflineTtsEngine.PACK_VITS_KEQING,
-            offlineSid = 0,
-            offlineSizeLabel = "115MB",
-            isBuiltinOffline = false
+            id = "edge:zh-TW-HsiaoChenNeural",
+            engineVoiceName = "zh-TW-HsiaoChenNeural",
+            displayLabel = "晓臻",
+            styleTag = "温柔细腻 · 湾腔情感女声",
+            isNeural = true
         ),
         TtsVoiceOption(
             id = "edge:zh-CN-liaoning-XiaobeiNeural",
             engineVoiceName = "zh-CN-liaoning-XiaobeiNeural",
             displayLabel = "晓北",
-            styleTag = "爽朗亲切 · 活力女声",
-            isNeural = true,
-            offlinePackId = SherpaOfflineTtsEngine.PACK_VITS_EULA,
-            offlineSid = 0,
-            offlineSizeLabel = "115MB",
-            isBuiltinOffline = false
+            styleTag = "爽朗幽默 · 东北方言女声",
+            isNeural = true
         ),
         TtsVoiceOption(
             id = "edge:zh-CN-shaanxi-XiaoniNeural",
             engineVoiceName = "zh-CN-shaanxi-XiaoniNeural",
             displayLabel = "晓妮",
-            styleTag = "温婉叙事 · 故事女声",
-            isNeural = true,
-            offlinePackId = SherpaOfflineTtsEngine.PACK_VITS_ECHO,
-            offlineSid = 0,
-            offlineSizeLabel = "115MB",
-            isBuiltinOffline = false
+            styleTag = "温婉叙事 · 陕西方言女声",
+            isNeural = true
         ),
         TtsVoiceOption(
-            id = "matcha:baker",
-            engineVoiceName = "zh-CN-XiaoxiaoNeural",
-            displayLabel = "小贝",
-            styleTag = "温润自然 · 广播级女声旁白",
-            isNeural = true,
-            offlinePackId = SherpaOfflineTtsEngine.PACK_MATCHA_BAKER,
-            offlineSid = 0,
-            offlineSizeLabel = "72MB",
-            isBuiltinOffline = false
+            id = "edge:zh-CN-YunxiaNeural",
+            engineVoiceName = "zh-CN-YunxiaNeural",
+            displayLabel = "云夏",
+            styleTag = "清朗少年 · 轻快叙述男声",
+            isNeural = true
         )
     )
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(4, TimeUnit.SECONDS)
-        .readTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS)
         .writeTimeout(5, TimeUnit.SECONDS)
         .pingInterval(15, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
 
+    private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
+
     class EmptyAudioException(message: String) : IllegalStateException(message)
+
+    suspend fun fetchVpsVoices(): List<TtsVoiceOption> = withContext(Dispatchers.IO) {
+        runCatching {
+            val req = Request.Builder()
+                .url("$VPS_TTS_BASE_URL/api/tts/voices")
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@runCatching neuralVoices
+                val body = resp.body?.string() ?: return@runCatching neuralVoices
+                val arr = JSONObject(body).optJSONArray("voices") ?: return@runCatching neuralVoices
+                val list = buildList {
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.getJSONObject(i)
+                        val engineName = obj.optString("engineVoiceName")
+                        val id = obj.optString("id")
+                        if (engineName.isBlank() || id.isBlank()) continue
+                        add(
+                            TtsVoiceOption(
+                                id = id,
+                                engineVoiceName = engineName,
+                                displayLabel = obj.optString("displayLabel", engineName),
+                                styleTag = obj.optString("styleTag", "Edge 拟真语音"),
+                                isNeural = true,
+                                offlineSid = if (engineName == "zh-CN-YunxiNeural") SherpaOfflineTtsEngine.YUNXI_BUILTIN_SID else 0,
+                                isBuiltinOffline = engineName == "zh-CN-YunxiNeural"
+                            )
+                        )
+                    }
+                }
+                if (list.isNotEmpty()) list else neuralVoices
+            }
+        }.getOrDefault(neuralVoices)
+    }
+
+    private suspend fun synthesizeViaVps(
+        text: String,
+        voiceName: String,
+        speechRate: Float
+    ): ByteArray = withContext(Dispatchers.IO) {
+        val payload = JSONObject()
+            .put("text", cleanText(text))
+            .put("voice", voiceName)
+            .put("speech_rate", speechRate.coerceIn(0.5f, 2.5f).toDouble())
+            .toString()
+        val req = Request.Builder()
+            .url("$VPS_TTS_BASE_URL/api/tts/synth")
+            .post(payload.toRequestBody(jsonMediaType))
+            .build()
+        client.newCall(req).execute().use { resp ->
+            if (resp.code == 422) {
+                throw EmptyAudioException("无可发声文本")
+            }
+            if (!resp.isSuccessful) {
+                throw IllegalStateException("VPS TTS HTTP ${resp.code}")
+            }
+            val bytes = resp.body?.bytes() ?: ByteArray(0)
+            if (bytes.size <= 64) {
+                throw EmptyAudioException("VPS 返回音频为空")
+            }
+            bytes
+        }
+    }
 
     suspend fun synthesizeToMp3Bytes(
         text: String,
         voiceName: String,
         speechRate: Float
     ): ByteArray {
+        // 1. Primary path: HK CN2 VPS Edge ReadAloud gateway (cached & low-latency)
+        try {
+            return synthesizeViaVps(text, voiceName, speechRate)
+        } catch (e: EmptyAudioException) {
+            throw e
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+        }
+
+        // 2. Direct Bing Edge WebSocket backup if VPS is temporarily unreachable
         var lastErr: Exception? = null
         repeat(2) { attempt ->
             try {
